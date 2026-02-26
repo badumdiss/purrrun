@@ -9,7 +9,7 @@ import {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GRAVITY = 1.0;
-const JUMP_FORCE = -10.4;
+const JUMP_FORCE = -12.48;
 const DOUBLE_JUMP_FORCE = -14.3;
 const INITIAL_SPEED = 5.5;
 const MAX_SPEED = 17.6;
