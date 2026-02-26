@@ -8,11 +8,11 @@ import {
 } from "./sprites";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const GRAVITY = 0.55;
-const JUMP_FORCE = -14;
+const GRAVITY = 1.0;
+const JUMP_FORCE = -8;
 const DOUBLE_JUMP_FORCE = -11;
-const INITIAL_SPEED = 5;
-const MAX_SPEED = 16;
+const INITIAL_SPEED = 5.5;
+const MAX_SPEED = 17.6;
 const SPEED_SCALE = 0.0008;
 
 // Sprite scale: each sprite pixel → 4 canvas pixels (pixel-art 16-bit look)
@@ -34,6 +34,9 @@ const DOG_W = 118;
 const DOG_H = 90;
 // Belly gap must be > CAT_CROUCH_H (40) so crouching cat is safe
 const DOG_BELLY_GAP = 44;
+// Rat that sits on top of dog — blocks jumping over, only crouch works
+const DOG_RAT_H = SMALL_MOUSE_H; // 38 px
+const DOG_RAT_W = SMALL_MOUSE_W; // 44 px
 
 const HIT_MARGIN = 8; // px of forgiveness on each edge
 
@@ -74,6 +77,7 @@ export class GameEngine {
   private spriteDead!: HTMLCanvasElement;
   private spriteCrouch!: HTMLCanvasElement;
 
+  private crouchHeld = false;
   private speed = INITIAL_SPEED;
   private _score = 0;
   private lastObstacleTime = -1;
@@ -145,6 +149,8 @@ export class GameEngine {
 
   startCrouch() {
     if (this._state !== "playing") return;
+    this.crouchHeld = true;
+    // Apply immediately if already on the ground running
     if (this.cat.state === "running") {
       this.cat.state = "crouching";
       this.cat.w = CAT_CROUCH_W;
@@ -154,6 +160,7 @@ export class GameEngine {
   }
 
   endCrouch() {
+    this.crouchHeld = false;
     if (this.cat.state === "crouching") {
       this.cat.state = "running";
       this.cat.w = CAT_W;
@@ -217,7 +224,15 @@ export class GameEngine {
       this.cat.vy = 0;
       this.cat.jumpCount = 0;
       if (this.cat.state === "jumping" || this.cat.state === "double-jumping") {
-        this.cat.state = "running";
+        if (this.crouchHeld) {
+          // Instantly crouch on landing — no delay
+          this.cat.state = "crouching";
+          this.cat.w = CAT_CROUCH_W;
+          this.cat.h = CAT_CROUCH_H;
+          this.cat.y = this.groundY - CAT_CROUCH_H;
+        } else {
+          this.cat.state = "running";
+        }
       }
     }
   }
@@ -270,18 +285,19 @@ export class GameEngine {
   private checkCollisions(): boolean {
     const cat = this.cat;
     for (const obs of this.obstacles) {
-      if (!this.rectsOverlap(cat, obs)) continue;
       if (obs.type === "dog") {
-        // Dog body hitbox = everything above the belly gap
-        const bodyBottom = obs.y + obs.h - DOG_BELLY_GAP;
-        // Crouching cat: cat.y = groundY - CAT_CROUCH_H = groundY - 40
-        // bodyBottom    = groundY - DOG_BELLY_GAP         = groundY - 44
-        // cat.y (groundY-40) < bodyBottom (groundY-44)? → -40 < -44? NO → safe ✓
-        // Standing cat:   cat.y = groundY - CAT_H         = groundY - 56
-        // cat.y (groundY-56) < bodyBottom (groundY-44)? → -56 < -44? YES → collision ✓
-        if (cat.y < bodyBottom) return true;
+        // Rat sitting on top of dog — blocks jumping over entirely
+        const ratX = obs.x + (DOG_W - DOG_RAT_W) / 2;
+        const ratZone = { x: ratX, y: obs.y - DOG_RAT_H, w: DOG_RAT_W, h: DOG_RAT_H };
+        if (this.rectsOverlap(cat, ratZone)) return true;
+
+        // Dog body — crouching cat (40 px) fits under the belly gap (44 px)
+        if (this.rectsOverlap(cat, obs)) {
+          const bodyBottom = obs.y + obs.h - DOG_BELLY_GAP;
+          if (cat.y < bodyBottom) return true;
+        }
       } else {
-        return true;
+        if (this.rectsOverlap(cat, obs)) return true;
       }
     }
     return false;
@@ -396,19 +412,25 @@ export class GameEngine {
     ctx.save();
     ctx.imageSmoothingEnabled = false; // nearest-neighbour → authentic pixel-art
 
-    if (cat.state === "dead") {
-      const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
-      ctx.translate(cx, cy);
-      ctx.rotate(cat.deathAngle);
-      ctx.translate(-cx, -cy);
-    }
-
     if (cat.state === "double-jumping") {
       ctx.shadowColor = "#ff8c00";
       ctx.shadowBlur  = 16;
     }
 
-    ctx.drawImage(sprite, cat.x, cat.y, cat.w, cat.h);
+    if (cat.state === "dead") {
+      // Rotate around cat centre then draw flipped
+      const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
+      ctx.translate(cx, cy);
+      ctx.rotate(cat.deathAngle);
+      ctx.scale(-1, 1); // face right
+      ctx.drawImage(sprite, -cat.w / 2, -cat.h / 2, cat.w, cat.h);
+    } else {
+      // Flip horizontally: translate to right edge, scale -1 in x
+      ctx.translate(cat.x + cat.w, cat.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
+    }
+
     ctx.restore();
   }
 
@@ -567,16 +589,11 @@ export class GameEngine {
       ctx.beginPath(); ctx.ellipse(lx + lw / 2, ly + lh, lw * 0.6, lw * 0.35, 0, 0, Math.PI * 2); ctx.fill();
     }
 
-    // "CROUCH!" hint as the dog approaches
-    if (obs.x > this.canvas.width * 0.15 && obs.x < this.canvas.width * 0.55) {
-      ctx.save();
-      ctx.fillStyle = "#ff4500";
-      ctx.font = "bold 13px monospace";
-      ctx.textAlign = "center";
-      ctx.shadowColor = "#ff4500"; ctx.shadowBlur = 8;
-      ctx.fillText("↓ CROUCH!", x + w * 0.5, y - 10);
-      ctx.restore();
-    }
+    // Draw rat sitting on top of the dog — warns player and blocks jumping
+    const ratX = x + (w - DOG_RAT_W) / 2;
+    const ratY = y - DOG_RAT_H;
+    this.drawMouse(ctx, { type: "small-mouse", x: ratX, y: ratY, w: DOG_RAT_W, h: DOG_RAT_H }, false);
+
   }
 
   // ─── HUD ───────────────────────────────────────────────────────────────────

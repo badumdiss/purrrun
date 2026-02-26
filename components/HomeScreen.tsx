@@ -1,50 +1,117 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { buildSpriteCache, CAT_POUNCE_HOME } from "@/lib/game/sprites";
+import { buildSpriteCache, CAT_RUN_A, CAT_RUN_B, CAT_JUMP } from "@/lib/game/sprites";
 
 interface Props {
   onStart: (name: string) => void;
   onLeaderboard: () => void;
 }
 
-// ── Pixel-art 16-bit style cat rendered on a canvas ─────────────────────────
-// Sprite: 24 cols × 20 rows, drawn at scale 5 → 120×100 px
-// Displayed at 2× CSS = 240×200 for a chunky pixel-art look
-function PounceReadyCat({ pouncing }: { pouncing: boolean }) {
+// ── Tiny pixel-art cat that runs from the left and jumps onto the Start button
+// Canvas is 320×44 px (the full card width), cat sprite is 32×28 (scale 2).
+// The cat faces RIGHT (flipped) and lands roughly centred over the button.
+function TinyRunningCat({ pouncing }: { pouncing: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pounceRef = useRef(pouncing);
+  pounceRef.current = pouncing;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const sprite = buildSpriteCache(CAT_POUNCE_HOME, 5);
-    const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(sprite, 0, 0, canvas.width, canvas.height);
-  }, []);
+
+    const CAT_W = 32, CAT_H = 28;
+    const CANVAS_W = canvas.width;
+    const GROUND_Y = canvas.height - CAT_H; // y of cat top when on "ground"
+
+    const runFrames = [
+      buildSpriteCache(CAT_RUN_A, 2),
+      buildSpriteCache(CAT_RUN_B, 2),
+    ];
+    const jumpSprite = buildSpriteCache(CAT_JUMP, 2);
+
+    // Target x: roughly centred in the canvas (lands on the button area)
+    const TARGET_X = CANVAS_W / 2 - CAT_W / 2;
+
+    let catX = -CAT_W - 10;
+    let catY = GROUND_Y;
+    let catVY = 0;
+    let phase: "running" | "jumping" | "idle" = "running";
+    let runIdx = 0;
+    let runTimer = 0;
+    let lastTs = -1;
+    let rafId: number;
+
+    const drawSprite = (sprite: HTMLCanvasElement) => {
+      const ctx = canvas.getContext("2d")!;
+      ctx.clearRect(0, 0, CANVAS_W, canvas.height);
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      // Flip horizontally so cat faces right
+      ctx.translate(catX + CAT_W, catY);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, CAT_W, CAT_H);
+      ctx.restore();
+    };
+
+    const animate = (ts: number) => {
+      if (lastTs < 0) lastTs = ts;
+      const dt = Math.min(ts - lastTs, 50);
+      lastTs = ts;
+
+      if (pounceRef.current && phase === "idle") {
+        // Quick leap off-screen to the right
+        catX += 6 * (dt / 16);
+        catVY += 1.0 * (dt / 16);
+        catY += catVY * (dt / 16);
+        if (catY > canvas.height + 10) { cancelAnimationFrame(rafId); return; }
+        drawSprite(jumpSprite);
+        rafId = requestAnimationFrame(animate);
+        return;
+      }
+
+      if (phase === "running") {
+        catX += 3.5 * (dt / 16);
+        runTimer += dt;
+        if (runTimer > 110) { runIdx = (runIdx + 1) % 2; runTimer = 0; }
+        if (catX >= TARGET_X - 20) {
+          phase = "jumping";
+          catVY = -7;
+        }
+        drawSprite(runFrames[runIdx]);
+      } else if (phase === "jumping") {
+        catX += 1.5 * (dt / 16);
+        catVY += 0.9 * (dt / 16);
+        catY += catVY * (dt / 16);
+        if (catY >= GROUND_Y && catVY > 0) {
+          catY = GROUND_Y;
+          catVY = 0;
+          catX = TARGET_X;
+          phase = "idle";
+        }
+        drawSprite(jumpSprite);
+      } else {
+        // Idle: slow blink between frames
+        runTimer += dt;
+        if (runTimer > 450) { runIdx = (runIdx + 1) % 2; runTimer = 0; }
+        drawSprite(runFrames[runIdx]);
+      }
+
+      rafId = requestAnimationFrame(animate);
+    };
+
+    rafId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount; pounce is read via ref
 
   return (
-    <div
-      className={`transition-all duration-100 ${
-        pouncing
-          ? "animate-[catPounce_0.65s_ease-in_forwards]"
-          : "animate-[float_3s_ease-in-out_infinite]"
-      }`}
-      style={{ display: "inline-block", imageRendering: "pixelated" }}
-    >
-      <canvas
-        ref={canvasRef}
-        width={120}
-        height={100}
-        style={{
-          width: 240,
-          height: 200,
-          imageRendering: "pixelated",
-          filter: "drop-shadow(0 0 24px rgba(255,140,0,0.55))",
-        }}
-      />
-    </div>
+    <canvas
+      ref={canvasRef}
+      width={320}
+      height={44}
+      style={{ imageRendering: "pixelated", width: 320, height: 44, display: "block" }}
+    />
   );
 }
 
@@ -124,7 +191,7 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
       </div>
 
       {/* Title */}
-      <div className="relative z-10 text-center mb-2">
+      <div className="relative z-10 text-center mb-4">
         <h1
           className="text-5xl md:text-6xl font-black font-mono tracking-tight"
           style={{
@@ -137,11 +204,6 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
         <p className="text-purple-400 font-mono text-sm tracking-widest mt-1 opacity-80">
           — the cat side-scroller —
         </p>
-      </div>
-
-      {/* 16-bit pixel-art cat */}
-      <div className="relative z-10 my-2">
-        <PounceReadyCat pouncing={pouncing} />
       </div>
 
       {/* Glass card */}
@@ -169,10 +231,15 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
         />
         {error && <p className="text-red-400 font-mono text-xs mb-2">{error}</p>}
 
+        {/* Tiny cat runs from left and lands on the button */}
+        <div className="mt-3 flex justify-center overflow-hidden" style={{ height: 44 }}>
+          <TinyRunningCat pouncing={pouncing} />
+        </div>
+
         <button
           onClick={handleStart}
           disabled={pouncing}
-          className={`relative w-full mt-3 py-3.5 rounded-xl font-black font-mono text-lg tracking-wide transition-all duration-200
+          className={`relative w-full py-3.5 rounded-xl font-black font-mono text-lg tracking-wide transition-all duration-200
             ${pouncing
               ? "opacity-50 cursor-not-allowed bg-orange-800"
               : "bg-orange-600 hover:bg-orange-500 active:scale-95 hover:shadow-[0_0_20px_rgba(255,140,0,0.5)]"
@@ -190,9 +257,9 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
 
         <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-3 gap-2 text-center">
           {[
-            { key: "SPACE",  desc: "jump" },
-            { key: "SPACE×2", desc: "double jump" },
-            { key: "↓",      desc: "crouch" },
+            { key: "SPACE/↑",    desc: "jump" },
+            { key: "SPACE/↑ ×2", desc: "double jump" },
+            { key: "↓",          desc: "crouch" },
           ].map(({ key, desc }) => (
             <div key={key}>
               <div className="text-orange-400 font-mono text-xs font-bold bg-black/40 rounded px-1 py-0.5 mb-1">

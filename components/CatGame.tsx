@@ -92,7 +92,7 @@ export default function CatGame({ playerName, onQuit }: Props) {
   // Key controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
+      if (e.code === "Space" || e.code === "ArrowUp") {
         e.preventDefault();
         engineRef.current?.jump();
       }
@@ -197,10 +197,10 @@ export default function CatGame({ playerName, onQuit }: Props) {
         {showHint && !gameOver && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 flex gap-4 text-xs font-mono pointer-events-none">
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
-              <kbd className="text-orange-400">SPACE</kbd> jump
+              <kbd className="text-orange-400">SPACE/↑</kbd> jump
             </span>
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
-              <kbd className="text-orange-400">SPACE×2</kbd> double jump
+              <kbd className="text-orange-400">SPACE/↑ ×2</kbd> double
             </span>
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
               <kbd className="text-orange-400">↓</kbd> crouch
