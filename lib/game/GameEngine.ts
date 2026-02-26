@@ -9,7 +9,7 @@ import {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GRAVITY = 1.0;
-const JUMP_FORCE = -9;
+const JUMP_FORCE = -8;
 const DOUBLE_JUMP_FORCE = -11;
 const INITIAL_SPEED = 5.5;
 const MAX_SPEED = 17.6;
@@ -216,7 +216,7 @@ export class GameEngine {
 
   private updateCat(dt: number) {
     if (this.cat.state === "crouching") return;
-    this.cat.vy += GRAVITY;
+    this.cat.vy += GRAVITY * (dt / 16); // scale by dt so height is framerate-independent
     this.cat.y  += this.cat.vy * (dt / 16);
     const floor = this.groundY - this.cat.h;
     if (this.cat.y >= floor) {
