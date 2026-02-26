@@ -5,6 +5,7 @@ import { buildSpriteCache, CAT_POUNCE_HOME } from "@/lib/game/sprites";
 
 interface Props {
   onStart: (name: string) => void;
+  onLeaderboard: () => void;
 }
 
 // ── Pixel-art 16-bit style cat rendered on a canvas ─────────────────────────
@@ -76,7 +77,7 @@ function Stars() {
 }
 
 // ── Home Screen ──────────────────────────────────────────────────────────────
-export default function HomeScreen({ onStart }: Props) {
+export default function HomeScreen({ onStart, onLeaderboard }: Props) {
   const [name, setName]         = useState("");
   const [pouncing, setPouncing] = useState(false);
   const [error, setError]       = useState("");
@@ -178,6 +179,13 @@ export default function HomeScreen({ onStart }: Props) {
             } text-white`}
         >
           {pouncing ? "🐱 pouncing…" : "🐾 START GAME"}
+        </button>
+
+        <button
+          onClick={onLeaderboard}
+          className="w-full mt-2 py-2.5 rounded-xl font-bold font-mono text-sm border border-purple-700 text-purple-300 hover:bg-purple-900/30 active:scale-95 transition-all"
+        >
+          🏆 See Leaderboard
         </button>
 
         <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-3 gap-2 text-center">

@@ -3,8 +3,9 @@
 import { useState } from "react";
 import HomeScreen from "@/components/HomeScreen";
 import CatGame from "@/components/CatGame";
+import Leaderboard from "@/components/Leaderboard";
 
-type Screen = "home" | "game";
+type Screen = "home" | "game" | "leaderboard";
 
 export default function Page() {
   const [screen, setScreen] = useState<Screen>("home");
@@ -15,13 +16,18 @@ export default function Page() {
     setScreen("game");
   };
 
-  const handleQuit = () => {
-    setScreen("home");
-  };
-
   if (screen === "game") {
-    return <CatGame playerName={playerName} onQuit={handleQuit} />;
+    return <CatGame playerName={playerName} onQuit={() => setScreen("home")} />;
   }
 
-  return <HomeScreen onStart={handleStart} />;
+  if (screen === "leaderboard") {
+    return <Leaderboard onBack={() => setScreen("home")} />;
+  }
+
+  return (
+    <HomeScreen
+      onStart={handleStart}
+      onLeaderboard={() => setScreen("leaderboard")}
+    />
+  );
 }
