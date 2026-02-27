@@ -58,9 +58,10 @@ export default function CatGame({ playerName, onQuit }: Props) {
     (score: number) => {
       setFinalScore(score);
       setGameOver(true);
+      fetchLeaderboard(); // pre-populate immediately; saveScore also refreshes after POST
       saveScore(score);
     },
-    [saveScore]
+    [saveScore, fetchLeaderboard]
   );
 
   const startGame = useCallback(() => {
