@@ -11,8 +11,8 @@ import {
 const GRAVITY = 1.0;
 const JUMP_FORCE = -14.976;
 const DOUBLE_JUMP_FORCE = -14.3;
-const INITIAL_SPEED = 5.5;
-const MAX_SPEED = 17.6;
+const INITIAL_SPEED = 6.655;
+const MAX_SPEED = 21.296;
 const SPEED_SCALE = 0.0008;
 
 // Sprite scale: each sprite pixel → 4 canvas pixels (pixel-art 16-bit look)
@@ -35,19 +35,22 @@ const PNG_LEG_SQUISH = 4;   // compressed leg height in canvas px during crouch
 const PNG_CROUCH_H   = PNG_BODY_ROWS * (PNG_DISPLAY / PNG_FRAME_SRC) + PNG_LEG_SQUISH; // 60
 const PNG_TAIL_X     = 56;  // source col 14 × 4 = x where tail starts in canvas
 
-const SMALL_MOUSE_W = 66;
-const SMALL_MOUSE_H = 56;
-const LARGE_MOUSE_W = 104;
-const LARGE_MOUSE_H = 88;
+const SMALL_MOUSE_W = 172;
+const SMALL_MOUSE_H = 146;
+const LARGE_MOUSE_W = 270;
+const LARGE_MOUSE_H = 228;
 const DOG_W = 320;
 const DOG_H = 260;
 // Belly gap: must be > CAT_CROUCH_H (40) so crouching cat is safe,
 //            and < CAT_H (80) so standing cat is blocked.
 const DOG_BELLY_GAP  = 105;
 
-const HIT_MARGIN     = 8;   // general forgiveness on each edge (px)
-const RAT_HIT_MARGIN = 20;  // extra-forgiving hitbox for rat/mouse obstacles
-const DOG_HIT_MARGIN = 22;  // forgiving hitbox for dog body
+const HIT_MARGIN             = 8;   // general forgiveness on each edge (px)
+const SMALL_RAT_H_MARGIN     = 48;  // horizontal (side) margin for small rat
+const SMALL_RAT_V_MARGIN     = 70;  // vertical (top/bottom) margin for small rat — very forgiving from above
+const LARGE_RAT_H_MARGIN     = 75;  // horizontal (side) margin for large rat
+const LARGE_RAT_V_MARGIN     = 108; // vertical (top/bottom) margin for large rat — almost touch from above safely
+const DOG_HIT_MARGIN         = 28;  // forgiving hitbox for dog body
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type CatState = "running" | "jumping" | "double-jumping" | "crouching" | "dead";
@@ -329,8 +332,9 @@ export class GameEngine {
           if (cat.y < bodyBottom) return true;
         }
       } else {
-        // Rats: use larger margin (more forgiving)
-        if (this.rectsOverlap(cat, obs, RAT_HIT_MARGIN)) return true;
+        const hm = obs.type === "large-mouse" ? LARGE_RAT_H_MARGIN : SMALL_RAT_H_MARGIN;
+        const vm = obs.type === "large-mouse" ? LARGE_RAT_V_MARGIN : SMALL_RAT_V_MARGIN;
+        if (this.rectsOverlap(cat, obs, hm, vm)) return true;
       }
     }
     return false;
@@ -339,13 +343,14 @@ export class GameEngine {
   private rectsOverlap(
     a: { x: number; y: number; w: number; h: number },
     b: { x: number; y: number; w: number; h: number },
-    margin: number
+    hMargin: number,
+    vMargin = hMargin
   ): boolean {
     return (
-      a.x + margin     < b.x + b.w - margin &&
-      a.x + a.w - margin > b.x + margin &&
-      a.y + margin     < b.y + b.h - margin &&
-      a.y + a.h - margin > b.y + margin
+      a.x + hMargin     < b.x + b.w - hMargin &&
+      a.x + a.w - hMargin > b.x + hMargin &&
+      a.y + vMargin     < b.y + b.h - vMargin &&
+      a.y + a.h - vMargin > b.y + vMargin
     );
   }
 
