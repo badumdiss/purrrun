@@ -49,13 +49,16 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
       let catVY      = 0;
       let facingRight = catVX > 0;
 
-      let runIdx      = 0;
-      let runTimer    = 0;
-      let dirTimer    = 0;
-      let nextDir     = 700 + Math.random() * 1100;
-      let hopTimer    = 0;
-      let nextHop     = 1000 + Math.random() * 2200;
-      let airborne    = false;
+      let runIdx       = 0;
+      let runTimer     = 0;
+      let dirTimer     = 0;
+      let nextDir      = 700 + Math.random() * 1100;
+      let hopTimer     = 0;
+      let nextHop      = 1000 + Math.random() * 2200;
+      let airborne     = false;
+      let jumpCount    = 0;   // 0 = on ground, 1 = single, 2 = double
+      let doubleTimer  = 0;   // time since first jump (for scheduling double jump)
+      let willDouble   = false; // whether this hop will have a double jump
 
       // pounce phase: "wander" → "leap" → "done"
       let phase: "wander" | "leap" | "done" = "wander";
@@ -141,22 +144,32 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
           facingRight = catVX > 0;
         }
 
-        // Occasional small hop
+        // Occasional hop (50% chance of double jump)
         if (!airborne && hopTimer >= nextHop) {
-          hopTimer = 0;
-          nextHop  = 1400 + Math.random() * 2800;
-          airborne = true;
-          catVY    = -(4 + Math.random() * 4);
+          hopTimer    = 0;
+          nextHop     = 1400 + Math.random() * 2800;
+          airborne    = true;
+          jumpCount   = 1;
+          catVY       = -(5 + Math.random() * 3);
+          willDouble  = Math.random() < 0.5;
+          doubleTimer = 0;
         }
 
-        // Gravity
+        // Gravity + double jump
         if (airborne) {
+          doubleTimer += dt;
+          // Trigger double jump ~200–350ms after first jump, while still rising
+          if (willDouble && jumpCount === 1 && doubleTimer > 200 + Math.random() * 150 && catVY < 0) {
+            catVY     = -(4 + Math.random() * 3);
+            jumpCount = 2;
+          }
           catVY += 0.7 * (dt / 16);
           catY  += catVY * (dt / 16);
           if (catY >= GROUND_Y) {
-            catY    = GROUND_Y;
-            catVY   = 0;
-            airborne = false;
+            catY      = GROUND_Y;
+            catVY     = 0;
+            airborne  = false;
+            jumpCount = 0;
           }
         }
 
@@ -390,7 +403,7 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
             textShadow: "0 0 30px rgba(255,140,0,0.6), 0 0 60px rgba(255,140,0,0.3)",
           }}
         >
-          PURR-RUN
+          PURR RUN
         </h1>
         <p className="text-purple-400 font-mono text-sm tracking-widest mt-1 opacity-80">
           — the cat side-scroller —
