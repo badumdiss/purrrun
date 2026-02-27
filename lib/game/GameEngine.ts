@@ -19,26 +19,35 @@ const SPEED_SCALE = 0.0008;
 const SPRITE_SCALE = 4;
 
 const CAT_X = 110;
-// Normal cat: 16 cols × 14 rows @ SPRITE_SCALE 4 → 64×56 canvas px
-const CAT_W = 64;
-const CAT_H = 56;
-// Crouch cat: 20 cols × 10 rows @ SPRITE_SCALE 4 → 80×40 canvas px
+// PNG cat sprites are 20×20 source pixels @ scale 4 → 80×80 canvas px
+const CAT_W = 80;
+const CAT_H = 80;
+// Crouch: same width, squished to 40px tall
 const CAT_CROUCH_W = 80;
 const CAT_CROUCH_H = 40;
 
-const SMALL_MOUSE_W = 44;
-const SMALL_MOUSE_H = 38;
-const LARGE_MOUSE_W = 70;
-const LARGE_MOUSE_H = 56;
-const DOG_W = 118;
-const DOG_H = 90;
-// Belly gap must be > CAT_CROUCH_H (40) so crouching cat is safe
-const DOG_BELLY_GAP = 44;
-// Rat that sits on top of dog — blocks jumping over, only crouch works
-const DOG_RAT_H = SMALL_MOUSE_H; // 38 px
-const DOG_RAT_W = SMALL_MOUSE_W; // 44 px
+// PNG sprite config
+const PNG_FRAME_SRC  = 20;  // each frame in source sheet is 20×20 px
+const PNG_DISPLAY    = 80;  // render at 80×80 canvas px (4× scale)
+const PNG_STILL_IDX  = 1;   // frame index 1 in Still.png = orange cat
+const PNG_BODY_ROWS  = 14;  // rows 0-13 = head+body (14 of 20 source rows)
+const PNG_LEG_SQUISH = 4;   // compressed leg height in canvas px during crouch
+const PNG_CROUCH_H   = PNG_BODY_ROWS * (PNG_DISPLAY / PNG_FRAME_SRC) + PNG_LEG_SQUISH; // 60
+const PNG_TAIL_X     = 56;  // source col 14 × 4 = x where tail starts in canvas
 
-const HIT_MARGIN = 8; // px of forgiveness on each edge
+const SMALL_MOUSE_W = 66;
+const SMALL_MOUSE_H = 56;
+const LARGE_MOUSE_W = 104;
+const LARGE_MOUSE_H = 88;
+const DOG_W = 320;
+const DOG_H = 260;
+// Belly gap: must be > CAT_CROUCH_H (40) so crouching cat is safe,
+//            and < CAT_H (80) so standing cat is blocked.
+const DOG_BELLY_GAP  = 105;
+
+const HIT_MARGIN     = 8;   // general forgiveness on each edge (px)
+const RAT_HIT_MARGIN = 20;  // extra-forgiving hitbox for rat/mouse obstacles
+const DOG_HIT_MARGIN = 22;  // forgiving hitbox for dog body
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type CatState = "running" | "jumping" | "double-jumping" | "crouching" | "dead";
@@ -71,11 +80,25 @@ export class GameEngine {
   private stars: Star[] = [];
   private groundOffset = 0;
 
-  // Pixel-art sprite cache
+  // Pixel-art sprite cache (fallback)
   private spriteRun: HTMLCanvasElement[] = [];
   private spriteJump!: HTMLCanvasElement;
   private spriteDead!: HTMLCanvasElement;
   private spriteCrouch!: HTMLCanvasElement;
+
+  // PNG sprite cache (primary)
+  private catRunPng: HTMLCanvasElement[] = [];
+  private catStillPng: HTMLCanvasElement | null = null;
+  private catCrouchPng: HTMLCanvasElement | null = null;
+  private catPngLoaded = false;
+
+  // PNG obstacle sprites
+  private dogFrames: HTMLCanvasElement[] = [];
+  private ratFrames: HTMLCanvasElement[] = [];
+  private obsPngLoaded = false;
+  private dogAnimFrame = 0;
+  private ratAnimFrame = 0;
+  private obsAnimTimer  = 0;
 
   private crouchHeld = false;
   private speed = INITIAL_SPEED;
@@ -100,7 +123,7 @@ export class GameEngine {
       deathAngle: 0,
     };
 
-    // Build pixel-art sprite caches (browser only — document is available)
+    // Build pixel-art sprite caches (fallback — browser only)
     this.spriteRun = [
       buildSpriteCache(CAT_RUN_A, SPRITE_SCALE),
       buildSpriteCache(CAT_RUN_B, SPRITE_SCALE),
@@ -108,6 +131,11 @@ export class GameEngine {
     this.spriteJump   = buildSpriteCache(CAT_JUMP,   SPRITE_SCALE);
     this.spriteDead   = buildSpriteCache(CAT_DEAD,   SPRITE_SCALE);
     this.spriteCrouch = buildSpriteCache(CAT_CROUCH, SPRITE_SCALE);
+
+    // Load PNG sprites (orange cat — Walk3 + Still frame 1)
+    this.loadCatPngs();
+    // Load PNG obstacle sprites (Dog 2 + Rat 1)
+    this.loadObstaclePngs();
 
     // Stars
     for (let i = 0; i < 60; i++) {
@@ -197,11 +225,20 @@ export class GameEngine {
     this.updateClouds(dt);
     this.groundOffset = (this.groundOffset + this.speed * (dt / 16)) % 40;
 
-    // Animation frames (only 2 run frames)
+    // Cat animation frames
+    const runFrameCount = this.catPngLoaded ? this.catRunPng.length : this.spriteRun.length;
     this.cat.animTimer += dt;
     if (this.cat.animTimer > 90) {
-      this.cat.animFrame = (this.cat.animFrame + 1) % 2;
+      this.cat.animFrame = (this.cat.animFrame + 1) % runFrameCount;
       this.cat.animTimer = 0;
+    }
+
+    // Obstacle animation frames
+    this.obsAnimTimer += dt;
+    if (this.obsAnimTimer > 100) {
+      this.dogAnimFrame = (this.dogAnimFrame + 1) % (this.dogFrames.length || 6);
+      this.ratAnimFrame = (this.ratAnimFrame + 1) % (this.ratFrames.length || 4);
+      this.obsAnimTimer = 0;
     }
 
     if (this.checkCollisions()) {
@@ -286,18 +323,14 @@ export class GameEngine {
     const cat = this.cat;
     for (const obs of this.obstacles) {
       if (obs.type === "dog") {
-        // Rat sitting on top of dog — blocks jumping over entirely
-        const ratX = obs.x + (DOG_W - DOG_RAT_W) / 2;
-        const ratZone = { x: ratX, y: obs.y - DOG_RAT_H, w: DOG_RAT_W, h: DOG_RAT_H };
-        if (this.rectsOverlap(cat, ratZone)) return true;
-
-        // Dog body — crouching cat (40 px) fits under the belly gap (44 px)
-        if (this.rectsOverlap(cat, obs)) {
+        // Dog body — crouching cat fits under the belly gap
+        if (this.rectsOverlap(cat, obs, DOG_HIT_MARGIN)) {
           const bodyBottom = obs.y + obs.h - DOG_BELLY_GAP;
           if (cat.y < bodyBottom) return true;
         }
       } else {
-        if (this.rectsOverlap(cat, obs)) return true;
+        // Rats: use larger margin (more forgiving)
+        if (this.rectsOverlap(cat, obs, RAT_HIT_MARGIN)) return true;
       }
     }
     return false;
@@ -305,13 +338,14 @@ export class GameEngine {
 
   private rectsOverlap(
     a: { x: number; y: number; w: number; h: number },
-    b: { x: number; y: number; w: number; h: number }
+    b: { x: number; y: number; w: number; h: number },
+    margin: number
   ): boolean {
     return (
-      a.x + HIT_MARGIN     < b.x + b.w - HIT_MARGIN &&
-      a.x + a.w - HIT_MARGIN > b.x + HIT_MARGIN &&
-      a.y + HIT_MARGIN     < b.y + b.h - HIT_MARGIN &&
-      a.y + a.h - HIT_MARGIN > b.y + HIT_MARGIN
+      a.x + margin     < b.x + b.w - margin &&
+      a.x + a.w - margin > b.x + margin &&
+      a.y + margin     < b.y + b.h - margin &&
+      a.y + a.h - margin > b.y + margin
     );
   }
 
@@ -399,18 +433,168 @@ export class GameEngine {
     ctx.setLineDash([]);
   }
 
-  // ─── Cat (pixel-art sprites) ───────────────────────────────────────────────
+  // ─── PNG sprite loader ─────────────────────────────────────────────────────
+  private loadCatPngs() {
+    let walkReady = false;
+    let stillReady = false;
+    const check = () => { if (walkReady && stillReady) this.catPngLoaded = true; };
+
+    // Walk3.png — 6 frames × 20px wide (orange cat running)
+    const walkImg = new Image();
+    walkImg.onload = () => {
+      const frames = walkImg.width / PNG_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = PNG_DISPLAY; c.height = PNG_DISPLAY;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(walkImg, i * PNG_FRAME_SRC, 0, PNG_FRAME_SRC, PNG_FRAME_SRC, 0, 0, PNG_DISPLAY, PNG_DISPLAY);
+        this.catRunPng.push(c);
+      }
+      walkReady = true;
+      check();
+    };
+    walkImg.src = "/cats/Walk3.png";
+
+    // Still.png — frame index 1 = orange cat idle
+    const stillImg = new Image();
+    stillImg.onload = () => {
+      // ── Normal still frame (idle / jump / dead) ──
+      const c = document.createElement("canvas");
+      c.width = PNG_DISPLAY; c.height = PNG_DISPLAY;
+      const cx = c.getContext("2d")!;
+      cx.imageSmoothingEnabled = false;
+      cx.drawImage(stillImg, PNG_STILL_IDX * PNG_FRAME_SRC, 0, PNG_FRAME_SRC, PNG_FRAME_SRC, 0, 0, PNG_DISPLAY, PNG_DISPLAY);
+      this.catStillPng = c;
+
+      // ── Crouch canvas ──────────────────────────────────────────────────────
+      // Body (rows 0–13) at full 4× scale = 56 px tall
+      // Legs (rows 14–19) squished to 4 px
+      // Tail (source cols 14–18 → canvas x 56–80): cleared → straight stub
+      const bodyH = PNG_BODY_ROWS * (PNG_DISPLAY / PNG_FRAME_SRC); // 56
+      const legH  = PNG_LEG_SQUISH;                                  // 4
+      const cc = document.createElement("canvas");
+      cc.width  = PNG_DISPLAY;
+      cc.height = PNG_CROUCH_H; // 60
+      const ccx = cc.getContext("2d")!;
+      ccx.imageSmoothingEnabled = false;
+
+      // Body+head portion
+      ccx.drawImage(
+        stillImg,
+        PNG_STILL_IDX * PNG_FRAME_SRC, 0, PNG_FRAME_SRC, PNG_BODY_ROWS,
+        0, 0, PNG_DISPLAY, bodyH
+      );
+      // Legs portion (squished)
+      ccx.drawImage(
+        stillImg,
+        PNG_STILL_IDX * PNG_FRAME_SRC, PNG_BODY_ROWS,
+        PNG_FRAME_SRC, PNG_FRAME_SRC - PNG_BODY_ROWS,
+        0, bodyH, PNG_DISPLAY, legH
+      );
+
+      // Erase only the upward-curling portion of the tail (rows 0–8 at 4× = y 0–36).
+      // Rows 9–13 (y=36–56) keep their rump pixels — they sit flush against the body
+      // at the col-13/14 boundary and form a natural attached stub.
+      ccx.clearRect(PNG_TAIL_X, 0, PNG_DISPLAY - PNG_TAIL_X, 36);
+
+      this.catCrouchPng = cc;
+
+      stillReady = true;
+      check();
+    };
+    stillImg.src = "/cats/Still.png";
+  }
+
+  // ─── Obstacle PNG loader ────────────────────────────────────────────────────
+  private loadObstaclePngs() {
+    const DOG_FRAME_SRC = 48; // Dog 2 Walk.png: 288×48 → 6 frames of 48×48
+    const RAT_FRAME_SRC = 32; // Rat 1 Walk.png: 128×32 → 4 frames of 32×32
+
+    let dogReady = false, ratReady = false;
+    const check = () => { if (dogReady && ratReady) this.obsPngLoaded = true; };
+
+    const dogImg = new Image();
+    dogImg.onload = () => {
+      const frames = dogImg.width / DOG_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = DOG_W; c.height = DOG_H;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(dogImg, i * DOG_FRAME_SRC, 0, DOG_FRAME_SRC, DOG_FRAME_SRC, 0, 0, DOG_W, DOG_H);
+        this.dogFrames.push(c);
+      }
+      dogReady = true; check();
+    };
+    dogImg.src = "/obstacles/dog.png";
+
+    const ratImg = new Image();
+    ratImg.onload = () => {
+      const frames = ratImg.width / RAT_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = SMALL_MOUSE_W; c.height = SMALL_MOUSE_H;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(ratImg, i * RAT_FRAME_SRC, 0, RAT_FRAME_SRC, RAT_FRAME_SRC, 0, 0, SMALL_MOUSE_W, SMALL_MOUSE_H);
+        this.ratFrames.push(c);
+      }
+      ratReady = true; check();
+    };
+    ratImg.src = "/obstacles/rat.png";
+  }
+
+  // ─── Cat drawing ───────────────────────────────────────────────────────────
   private drawCat(ctx: CanvasRenderingContext2D) {
     const { cat } = this;
 
+    if (this.catPngLoaded) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+
+      if (cat.state === "double-jumping") {
+        ctx.shadowColor = "#ff8c00";
+        ctx.shadowBlur  = 16;
+      }
+
+      if (cat.state === "dead") {
+        // Rotate around centre then flip so cat faces right while tumbling
+        const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(cat.deathAngle);
+        ctx.scale(-1, 1);
+        ctx.drawImage(this.catStillPng!, -cat.w / 2, -cat.h / 2, cat.w, cat.h);
+      } else if (cat.state === "crouching") {
+        // Body stays full size; only legs are tiny; tail is a straight stub.
+        // Visual height = PNG_CROUCH_H (60 px); feet land at groundY.
+        const drawY = this.groundY - PNG_CROUCH_H;
+        ctx.translate(cat.x + CAT_CROUCH_W, drawY);
+        ctx.scale(-1, 1); // flip so head faces right
+        ctx.drawImage(this.catCrouchPng!, 0, 0, CAT_CROUCH_W, PNG_CROUCH_H);
+      } else {
+        // Running / jumping — flip so head faces right
+        const sprite = cat.state === "jumping" || cat.state === "double-jumping"
+          ? this.catStillPng!
+          : this.catRunPng[cat.animFrame % this.catRunPng.length];
+        ctx.translate(cat.x + cat.w, cat.y);
+        ctx.scale(-1, 1);
+        ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
+      }
+
+      ctx.restore();
+      return;
+    }
+
+    // ── Pixel-art fallback ──────────────────────────────────────────────────
     let sprite: HTMLCanvasElement;
-    if      (cat.state === "dead")                                  sprite = this.spriteDead;
-    else if (cat.state === "crouching")                             sprite = this.spriteCrouch;
+    if      (cat.state === "dead")                                      sprite = this.spriteDead;
+    else if (cat.state === "crouching")                                 sprite = this.spriteCrouch;
     else if (cat.state === "jumping" || cat.state === "double-jumping") sprite = this.spriteJump;
     else sprite = this.spriteRun[cat.animFrame % this.spriteRun.length];
 
     ctx.save();
-    ctx.imageSmoothingEnabled = false; // nearest-neighbour → authentic pixel-art
+    ctx.imageSmoothingEnabled = false;
 
     if (cat.state === "double-jumping") {
       ctx.shadowColor = "#ff8c00";
@@ -418,14 +602,12 @@ export class GameEngine {
     }
 
     if (cat.state === "dead") {
-      // Rotate around cat centre then draw flipped
       const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
       ctx.translate(cx, cy);
       ctx.rotate(cat.deathAngle);
-      ctx.scale(-1, 1); // face right
+      ctx.scale(-1, 1);
       ctx.drawImage(sprite, -cat.w / 2, -cat.h / 2, cat.w, cat.h);
     } else {
-      // Flip horizontally: translate to right edge, scale -1 in x
       ctx.translate(cat.x + cat.w, cat.y);
       ctx.scale(-1, 1);
       ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
@@ -434,166 +616,64 @@ export class GameEngine {
     ctx.restore();
   }
 
-  // ─── Mouse ─────────────────────────────────────────────────────────────────
-  private drawMouse(ctx: CanvasRenderingContext2D, obs: Obstacle, large: boolean) {
-    void large; // size already encoded in obs.w / obs.h
+  // ─── Mouse / Rat ───────────────────────────────────────────────────────────
+  private drawMouse(ctx: CanvasRenderingContext2D, obs: Obstacle, _large: boolean) {
+    if (this.obsPngLoaded && this.ratFrames.length > 0) {
+      const sprite = this.ratFrames[0]; // stand still
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      // Flip to face left
+      ctx.translate(obs.x + obs.w, obs.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
+      ctx.restore();
+      return;
+    }
+
+    // ── pixel-art fallback ──────────────────────────────────────────────────
     const { x, y, w, h } = obs;
-
     ctx.save();
-    ctx.shadowColor = "#ff0000";
-    ctx.shadowBlur  = 12;
-
-    // Body
+    ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 12;
     ctx.fillStyle = "#2a2a3a";
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.52, y + h * 0.62, w * 0.38, h * 0.32, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Head
+    ctx.beginPath(); ctx.ellipse(x + w*.52, y + h*.62, w*.38, h*.32, 0, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#333344";
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.28, y + h * 0.38, w * 0.27, h * 0.34, -0.1, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Ears
-    ctx.fillStyle = "#3a3a4a";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.12, y + h * 0.08, w * 0.13, h * 0.14, -0.3, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.3,  y + h * 0.06, w * 0.12, h * 0.13,  0.2, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#1a001a";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.12, y + h * 0.09, w * 0.08, h * 0.08, -0.3, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.3,  y + h * 0.07, w * 0.07, h * 0.07,  0.2, 0, Math.PI * 2); ctx.fill();
-
-    // Red glowing eyes
+    ctx.beginPath(); ctx.ellipse(x + w*.28, y + h*.38, w*.27, h*.34, -.1, 0, Math.PI*2); ctx.fill();
     ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 16;
     ctx.fillStyle = "#ff0000";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.16, y + h * 0.33, 4, 4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.3,  y + h * 0.3,  4, 4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#220000";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.16, y + h * 0.33, 2, 2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.3,  y + h * 0.3,  2, 2, 0, 0, Math.PI * 2); ctx.fill();
-
-    // Evil grin + teeth
-    ctx.strokeStyle = "#888"; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + w * 0.12, y + h * 0.52);
-    ctx.quadraticCurveTo(x + w * 0.22, y + h * 0.62, x + w * 0.34, y + h * 0.52);
-    ctx.stroke();
-    ctx.fillStyle = "#f0f0f0";
-    ctx.fillRect(x + w * 0.16, y + h * 0.52, 4, 5);
-    ctx.fillRect(x + w * 0.22, y + h * 0.53, 4, 5);
-    ctx.fillRect(x + w * 0.28, y + h * 0.52, 4, 5);
-
-    // Whiskers
-    ctx.strokeStyle = "rgba(255,200,200,0.5)"; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x + w * 0.06, y + h * 0.44); ctx.lineTo(x - w * 0.1, y + h * 0.4); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.06, y + h * 0.5);  ctx.lineTo(x - w * 0.1, y + h * 0.5); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.38, y + h * 0.44); ctx.lineTo(x + w * 0.54, y + h * 0.4); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.38, y + h * 0.5);  ctx.lineTo(x + w * 0.54, y + h * 0.5); ctx.stroke();
-
-    // Tail
-    ctx.strokeStyle = "#444"; ctx.lineWidth = 3; ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x + w * 0.9, y + h * 0.7);
-    ctx.bezierCurveTo(x + w * 1.15, y + h * 0.5, x + w * 1.2, y + h * 0.2, x + w * 1.05, y + h * 0.1);
-    ctx.stroke();
-
-    // Legs
-    ctx.strokeStyle = "#444"; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(x + w * 0.38, y + h * 0.82); ctx.lineTo(x + w * 0.34, y + h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.5,  y + h * 0.85); ctx.lineTo(x + w * 0.54, y + h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.64, y + h * 0.82); ctx.lineTo(x + w * 0.6,  y + h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x + w * 0.74, y + h * 0.84); ctx.lineTo(x + w * 0.78, y + h); ctx.stroke();
-
+    ctx.beginPath(); ctx.ellipse(x + w*.16, y + h*.33, 4, 4, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + w*.3,  y + h*.3,  4, 4, 0, 0, Math.PI*2); ctx.fill();
     ctx.restore();
   }
 
   // ─── Dog ───────────────────────────────────────────────────────────────────
   private drawDog(ctx: CanvasRenderingContext2D, obs: Obstacle) {
+    if (this.obsPngLoaded && this.dogFrames.length > 0) {
+      const sprite = this.dogFrames[0]; // stand still
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      // Flip to face left
+      ctx.translate(obs.x + obs.w, obs.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
+      ctx.restore();
+      return;
+    }
+
+    // ── pixel-art fallback ──────────────────────────────────────────────────
     const { x, y, w, h } = obs;
-    const TAN = "#c68b3b", DRK = "#8b5e1a", WH = "#f5f0e0";
-
-    // Body
+    const TAN = "#c68b3b", DRK = "#8b5e1a";
     ctx.fillStyle = TAN;
-    ctx.beginPath();
-    ctx.roundRect(x + w * 0.1, y + h * 0.1, w * 0.8, h * 0.5, 8);
-    ctx.fill();
+    ctx.beginPath(); ctx.roundRect(x + w*.1, y + h*.1, w*.8, h*.5, 8); ctx.fill();
     ctx.strokeStyle = DRK; ctx.lineWidth = 2; ctx.stroke();
-
-    // Belly
-    ctx.fillStyle = WH;
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.5, y + h * 0.48, w * 0.28, h * 0.1, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Spots
-    ctx.fillStyle = DRK; ctx.globalAlpha = 0.3;
-    ctx.beginPath(); ctx.ellipse(x + w * 0.65, y + h * 0.22, 10, 8, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.45, y + h * 0.18,  7, 6, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // Head
     ctx.fillStyle = TAN;
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.18, y + h * 0.18, w * 0.2, h * 0.2, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + w*.18, y + h*.18, w*.2, h*.2, 0, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = DRK; ctx.lineWidth = 1.5; ctx.stroke();
-
-    // Snout
-    ctx.fillStyle = WH;
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.08, y + h * 0.25, w * 0.1, h * 0.1, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Nose
-    ctx.fillStyle = "#333";
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.03, y + h * 0.22, 5, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Eye
-    ctx.fillStyle = "#4a3000";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.12, y + h * 0.14, 4, 4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath(); ctx.arc(x + w * 0.11, y + h * 0.13, 1.5, 0, Math.PI * 2); ctx.fill();
-
-    // Ears
-    ctx.fillStyle = DRK;
-    ctx.beginPath(); ctx.ellipse(x + w * 0.1,  y + h * 0.28, w * 0.08, h * 0.12, 0.4, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x + w * 0.26, y + h * 0.1,  w * 0.07, h * 0.11, -0.3, 0, Math.PI * 2); ctx.fill();
-
-    // Mouth + tongue
-    ctx.strokeStyle = DRK; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + w * 0.03, y + h * 0.28);
-    ctx.quadraticCurveTo(x + w * 0.09, y + h * 0.34, x + w * 0.15, y + h * 0.28);
-    ctx.stroke();
-    ctx.fillStyle = "#ff6b8a";
-    ctx.beginPath(); ctx.ellipse(x + w * 0.08, y + h * 0.32, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
-
-    // Tail
-    ctx.strokeStyle = TAN; ctx.lineWidth = 6; ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x + w * 0.9,  y + h * 0.2);
-    ctx.bezierCurveTo(x + w * 1.12, y + h * 0.1, x + w * 1.18, y - h * 0.1, x + w * 1.08, y - h * 0.15);
-    ctx.stroke();
-
-    // 4 Legs
-    for (const lx of [x + w * 0.2, x + w * 0.38, x + w * 0.58, x + w * 0.74]) {
-      const lw = w * 0.12, lh = h * 0.42;
-      const ly = y + h * 0.58;
+    for (const lx of [x+w*.2, x+w*.38, x+w*.58, x+w*.74]) {
+      const lw = w*.12, lh = h*.42, ly = y + h*.58;
       ctx.fillStyle = TAN;
       ctx.beginPath(); ctx.roundRect(lx, ly, lw, lh, 4); ctx.fill();
       ctx.strokeStyle = DRK; ctx.lineWidth = 1.5; ctx.stroke();
-      ctx.fillStyle = WH;
-      ctx.beginPath(); ctx.ellipse(lx + lw / 2, ly + lh, lw * 0.6, lw * 0.35, 0, 0, Math.PI * 2); ctx.fill();
     }
-
-    // Draw rat sitting on top of the dog — warns player and blocks jumping
-    const ratX = x + (w - DOG_RAT_W) / 2;
-    const ratY = y - DOG_RAT_H;
-    this.drawMouse(ctx, { type: "small-mouse", x: ratX, y: ratY, w: DOG_RAT_W, h: DOG_RAT_H }, false);
-
   }
 
   // ─── HUD ───────────────────────────────────────────────────────────────────

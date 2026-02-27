@@ -1,116 +1,300 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { buildSpriteCache, CAT_RUN_A, CAT_RUN_B, CAT_JUMP } from "@/lib/game/sprites";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 interface Props {
   onStart: (name: string) => void;
   onLeaderboard: () => void;
 }
 
-// ── Tiny pixel-art cat that runs from the left and jumps onto the Start button
-// Canvas is 320×44 px (the full card width), cat sprite is 32×28 (scale 2).
-// The cat faces RIGHT (flipped) and lands roughly centred over the button.
-function TinyRunningCat({ pouncing }: { pouncing: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pounceRef = useRef(pouncing);
+// ── PNG wandering cat above the Start button ──────────────────────────────────
+// Uses Walk3.png (orange cat, 6 run frames) + Still.png (frame 1 = orange idle).
+// The cat wanders erratically left/right, facing whichever way it's heading.
+// When pouncing=true it grows and hops down onto the button.
+function PngWanderCat({ pouncing }: { pouncing: boolean }) {
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const pounceRef  = useRef(pouncing);
   pounceRef.current = pouncing;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const CAT_W = 32, CAT_H = 28;
-    const CANVAS_W = canvas.width;
-    const GROUND_Y = canvas.height - CAT_H; // y of cat top when on "ground"
+    const CW = 320, CH = 72;
+    const CAT_SZ  = 40;           // normal display size
+    const FRAME_W = 20;            // source frame size (20×20 px each)
+    const GROUND_Y = CH - CAT_SZ; // y of cat top when "on ground"
 
-    const runFrames = [
-      buildSpriteCache(CAT_RUN_A, 2),
-      buildSpriteCache(CAT_RUN_B, 2),
-    ];
-    const jumpSprite = buildSpriteCache(CAT_JUMP, 2);
+    const runFrames: HTMLCanvasElement[] = [];
+    let   stillFrame: HTMLCanvasElement | null = null;
+    let   loaded = 0;
 
-    // Target x: roughly centred in the canvas (lands on the button area)
-    const TARGET_X = CANVAS_W / 2 - CAT_W / 2;
+    function buildFrame(img: HTMLImageElement, srcX: number, size: number): HTMLCanvasElement {
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const cx = c.getContext("2d")!;
+      cx.imageSmoothingEnabled = false;
+      cx.drawImage(img, srcX, 0, FRAME_W, FRAME_W, 0, 0, size, size);
+      return c;
+    }
 
-    let catX = -CAT_W - 10;
-    let catY = GROUND_Y;
-    let catVY = 0;
-    let phase: "running" | "jumping" | "idle" = "running";
-    let runIdx = 0;
-    let runTimer = 0;
-    let lastTs = -1;
-    let rafId: number;
+    function onReady() {
+      loaded++;
+      if (loaded < 2) return;
 
-    const drawSprite = (sprite: HTMLCanvasElement) => {
-      const ctx = canvas.getContext("2d")!;
-      ctx.clearRect(0, 0, CANVAS_W, canvas.height);
-      ctx.save();
-      ctx.imageSmoothingEnabled = false;
-      // Flip horizontally so cat faces right
-      ctx.translate(catX + CAT_W, catY);
-      ctx.scale(-1, 1);
-      ctx.drawImage(sprite, 0, 0, CAT_W, CAT_H);
-      ctx.restore();
-    };
+      // ── animation state ────────────────────────────────────────────────────
+      let catX       = CW / 2 - CAT_SZ / 2;
+      let catY       = GROUND_Y;
+      let catVX      = (Math.random() > 0.5 ? 1 : -1) * (1.8 + Math.random() * 1.5);
+      let catVY      = 0;
+      let facingRight = catVX > 0;
 
-    const animate = (ts: number) => {
-      if (lastTs < 0) lastTs = ts;
-      const dt = Math.min(ts - lastTs, 50);
-      lastTs = ts;
+      let runIdx      = 0;
+      let runTimer    = 0;
+      let dirTimer    = 0;
+      let nextDir     = 700 + Math.random() * 1100;
+      let hopTimer    = 0;
+      let nextHop     = 1000 + Math.random() * 2200;
+      let airborne    = false;
 
-      if (pounceRef.current && phase === "idle") {
-        // Quick leap off-screen to the right
-        catX += 6 * (dt / 16);
-        catVY += 1.0 * (dt / 16);
-        catY += catVY * (dt / 16);
-        if (catY > canvas.height + 10) { cancelAnimationFrame(rafId); return; }
-        drawSprite(jumpSprite);
+      // pounce phase: "wander" → "leap" → "done"
+      let phase: "wander" | "leap" | "done" = "wander";
+      let leapScale  = 1;
+      let lastTs     = -1;
+      let rafId: number;
+
+      const ctx = (canvas as HTMLCanvasElement).getContext("2d")!;
+
+      function drawCat(
+        sprite: HTMLCanvasElement,
+        x: number, y: number,
+        size: number,
+        faceRight: boolean,
+      ) {
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        if (faceRight) {
+          // Sprite faces LEFT naturally — flip to face right
+          ctx.translate(x + size, y);
+          ctx.scale(-1, 1);
+          ctx.drawImage(sprite, 0, 0, size, size);
+        } else {
+          ctx.drawImage(sprite, x, y, size, size);
+        }
+        ctx.restore();
+      }
+
+      const animate = (ts: number) => {
+        if (lastTs < 0) lastTs = ts;
+        const dt = Math.min(ts - lastTs, 50);
+        lastTs = ts;
+
+        ctx.clearRect(0, 0, CW, CH);
+
+        // ── trigger leap when button pressed ──────────────────────────────
+        if (pounceRef.current && phase === "wander") {
+          phase     = "leap";
+          catVX     = 0;
+          catVY     = -9;
+          leapScale = 1;
+          // face center
+          facingRight = catX < CW / 2 - CAT_SZ / 2;
+        }
+
+        if (phase === "leap") {
+          leapScale = Math.min(leapScale + 0.05 * (dt / 16), 1.8);
+          catVY    += 0.85 * (dt / 16);
+          catY     += catVY  * (dt / 16);
+          const sz  = Math.round(CAT_SZ * leapScale);
+          const landY = CH - sz;
+          if (catY >= landY && catVY > 0) {
+            catY  = landY;
+            phase = "done";
+          }
+          // drift toward centre x
+          const targetX = CW / 2 - sz / 2;
+          catX += (targetX - catX) * 0.08 * (dt / 16);
+          runTimer += dt;
+          if (runTimer > 90) { runIdx = (runIdx + 1) % runFrames.length; runTimer = 0; }
+          drawCat(runFrames[runIdx] ?? stillFrame!, catX, catY, sz, facingRight);
+          rafId = requestAnimationFrame(animate);
+          return;
+        }
+
+        if (phase === "done") {
+          const sz = Math.round(CAT_SZ * leapScale);
+          drawCat(stillFrame!, CW / 2 - sz / 2, CH - sz, sz, facingRight);
+          rafId = requestAnimationFrame(animate);
+          return;
+        }
+
+        // ── wander phase ──────────────────────────────────────────────────
+        dirTimer += dt;
+        hopTimer += dt;
+        runTimer += dt;
+
+        // Random direction change
+        if (dirTimer >= nextDir) {
+          dirTimer = 0;
+          nextDir  = 600 + Math.random() * 1200;
+          catVX    = (Math.random() > 0.5 ? 1 : -1) * (1.5 + Math.random() * 2.5);
+          facingRight = catVX > 0;
+        }
+
+        // Occasional small hop
+        if (!airborne && hopTimer >= nextHop) {
+          hopTimer = 0;
+          nextHop  = 1400 + Math.random() * 2800;
+          airborne = true;
+          catVY    = -(4 + Math.random() * 4);
+        }
+
+        // Gravity
+        if (airborne) {
+          catVY += 0.7 * (dt / 16);
+          catY  += catVY * (dt / 16);
+          if (catY >= GROUND_Y) {
+            catY    = GROUND_Y;
+            catVY   = 0;
+            airborne = false;
+          }
+        }
+
+        catX += catVX * (dt / 16);
+
+        // Bounce off edges — flip direction
+        if (catX < 0) {
+          catX = 0;
+          catVX = Math.abs(catVX);
+          facingRight = true;
+          dirTimer = 0; nextDir = 500 + Math.random() * 900;
+        }
+        if (catX > CW - CAT_SZ) {
+          catX = CW - CAT_SZ;
+          catVX = -Math.abs(catVX);
+          facingRight = false;
+          dirTimer = 0; nextDir = 500 + Math.random() * 900;
+        }
+
+        // Animate run frames
+        if (runTimer > 90) { runIdx = (runIdx + 1) % runFrames.length; runTimer = 0; }
+
+        const sprite = airborne ? stillFrame! : runFrames[runIdx];
+        drawCat(sprite, catX, catY, CAT_SZ, facingRight);
+
         rafId = requestAnimationFrame(animate);
-        return;
-      }
-
-      if (phase === "running") {
-        catX += 3.5 * (dt / 16);
-        runTimer += dt;
-        if (runTimer > 110) { runIdx = (runIdx + 1) % 2; runTimer = 0; }
-        if (catX >= TARGET_X - 20) {
-          phase = "jumping";
-          catVY = -7;
-        }
-        drawSprite(runFrames[runIdx]);
-      } else if (phase === "jumping") {
-        catX += 1.5 * (dt / 16);
-        catVY += 0.9 * (dt / 16);
-        catY += catVY * (dt / 16);
-        if (catY >= GROUND_Y && catVY > 0) {
-          catY = GROUND_Y;
-          catVY = 0;
-          catX = TARGET_X;
-          phase = "idle";
-        }
-        drawSprite(jumpSprite);
-      } else {
-        // Idle: slow blink between frames
-        runTimer += dt;
-        if (runTimer > 450) { runIdx = (runIdx + 1) % 2; runTimer = 0; }
-        drawSprite(runFrames[runIdx]);
-      }
+      };
 
       rafId = requestAnimationFrame(animate);
-    };
+      return () => cancelAnimationFrame(rafId);
+    }
 
-    rafId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(rafId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run once on mount; pounce is read via ref
+    // Load Walk3 (run frames)
+    const walkImg = new Image();
+    walkImg.onload = () => {
+      const frames = walkImg.width / FRAME_W;
+      for (let i = 0; i < frames; i++) {
+        runFrames.push(buildFrame(walkImg, i * FRAME_W, CAT_SZ));
+      }
+      onReady();
+    };
+    walkImg.src = "/cats/Walk3.png";
+
+    // Load Still (idle frame, index 1 = orange cat)
+    const stillImg = new Image();
+    stillImg.onload = () => {
+      stillFrame = buildFrame(stillImg, 1 * FRAME_W, CAT_SZ);
+      onReady();
+    };
+    stillImg.src = "/cats/Still.png";
+
+    // cleanup handled inside onReady; return no-op if images not loaded yet
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <canvas
       ref={canvasRef}
       width={320}
-      height={44}
-      style={{ imageRendering: "pixelated", width: 320, height: 44, display: "block" }}
+      height={72}
+      style={{ imageRendering: "pixelated", width: 320, height: 72, display: "block" }}
+    />
+  );
+}
+
+// ── Full-screen grow animation after pounce ───────────────────────────────────
+// Cat grows from ~72 px at screen centre to cover the whole screen, then calls onDone.
+function FillScreenCat({ onDone }: { onDone: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+
+  useEffect(() => {
+    const canvas = canvasRef.current!;
+    const W = window.innerWidth, H = window.innerHeight;
+    canvas.width  = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d")!;
+
+    const startSize = 72;                             // matches pounce leapScale 1.8 × 40
+    const maxSize   = Math.hypot(W, H) * 2.1;        // big enough to fill any screen
+    const duration  = 900;                            // ms
+    const cx = W / 2, cy = H * 0.62;                 // roughly where button sits
+
+    let stillFrame: HTMLCanvasElement | null = null;
+    let rafId: number;
+
+    const stillImg = new Image();
+    stillImg.onload = () => {
+      stillFrame = document.createElement("canvas");
+      stillFrame.width = stillFrame.height = 80;
+      const fc = stillFrame.getContext("2d")!;
+      fc.imageSmoothingEnabled = false;
+      fc.drawImage(stillImg, 20, 0, 20, 20, 0, 0, 80, 80); // Still frame index 1 (orange cat)
+
+      const t0 = performance.now();
+
+      const animate = (ts: number) => {
+        const t = Math.min((ts - t0) / duration, 1);
+        const ease = t * t;                            // ease-in = starts slow, accelerates
+        const size  = startSize + (maxSize - startSize) * ease;
+
+        ctx.fillStyle = "#06040f";
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        // Cat faces right — flip horizontally
+        ctx.translate(cx + size / 2, cy - size / 2);
+        ctx.scale(-1, 1);
+        ctx.drawImage(stillFrame!, 0, 0, size, size);
+        ctx.restore();
+
+        if (t < 1) {
+          rafId = requestAnimationFrame(animate);
+        } else {
+          onDoneRef.current();
+        }
+      };
+
+      rafId = requestAnimationFrame(animate);
+    };
+    stillImg.src = "/cats/Still.png";
+
+    return () => cancelAnimationFrame(rafId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        imageRendering: "pixelated",
+        display: "block",
+      }}
     />
   );
 }
@@ -131,10 +315,10 @@ function Stars() {
           key={i}
           className="absolute rounded-full bg-white"
           style={{
-            left: `${s.x}%`,
-            top:  `${s.y}%`,
-            width:  s.r * 2,
-            height: s.r * 2,
+            left:    `${s.x}%`,
+            top:     `${s.y}%`,
+            width:   s.r * 2,
+            height:  s.r * 2,
             opacity: s.o,
           }}
         />
@@ -147,10 +331,12 @@ function Stars() {
 export default function HomeScreen({ onStart, onLeaderboard }: Props) {
   const [name, setName]         = useState("");
   const [pouncing, setPouncing] = useState(false);
+  const [filling, setFilling]   = useState(false);
   const [error, setError]       = useState("");
+  const nameRef  = useRef(name);
+  nameRef.current = name;
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Restore saved name
   useEffect(() => {
     const saved = localStorage.getItem("catRunnerPlayerName");
     if (saved) setName(saved);
@@ -171,8 +357,13 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
     setError("");
     localStorage.setItem("catRunnerPlayerName", trimmed);
     setPouncing(true);
-    setTimeout(() => onStart(trimmed), 700);
+    // After the pounce-leap settles (~800 ms), trigger the screen-fill animation
+    setTimeout(() => setFilling(true), 800);
   };
+
+  const handleFillDone = useCallback(() => {
+    onStart(nameRef.current.trim());
+  }, [onStart]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleStart();
@@ -231,9 +422,9 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
         />
         {error && <p className="text-red-400 font-mono text-xs mb-2">{error}</p>}
 
-        {/* Tiny cat runs from left and lands on the button */}
-        <div className="mt-3 flex justify-center overflow-hidden" style={{ height: 44 }}>
-          <TinyRunningCat pouncing={pouncing} />
+        {/* PNG cat wanders above the button */}
+        <div className="mt-3 flex justify-center" style={{ height: 72 }}>
+          <PngWanderCat pouncing={pouncing} />
         </div>
 
         <button
@@ -257,9 +448,9 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
 
         <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-3 gap-2 text-center">
           {[
-            { key: "SPACE/↑",    desc: "jump" },
-            { key: "SPACE/↑ ×2", desc: "double jump" },
-            { key: "↓",          desc: "crouch" },
+            { key: "SPACE/↑",     desc: "jump" },
+            { key: "SPACE/↑ ×2",  desc: "double jump" },
+            { key: "↓",           desc: "crouch" },
           ].map(({ key, desc }) => (
             <div key={key}>
               <div className="text-orange-400 font-mono text-xs font-bold bg-black/40 rounded px-1 py-0.5 mb-1">
@@ -274,6 +465,9 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
       <p className="relative z-10 mt-6 text-gray-700 font-mono text-xs">
         jump over evil mice · crouch under dogs · rack up distance
       </p>
+
+      {/* Full-screen cat-grow transition after pounce */}
+      {filling && <FillScreenCat onDone={handleFillDone} />}
     </div>
   );
 }
