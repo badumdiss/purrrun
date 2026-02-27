@@ -324,67 +324,64 @@ export class GameEngine {
   private checkCollisions(): boolean {
     const catHit = this.getCatHitbox();
     for (const obs of this.obstacles) {
-      const obsHit = this.getObsVisualHitbox(obs);
-      if (!this.aabbOverlap(catHit, obsHit)) continue;
+      const boxes = this.getObsHitboxes(obs);
+      for (const box of boxes) {
+        if (!this.aabbOverlap(catHit, box)) continue;
 
-      if (obs.type === "dog") {
-        // Belly gap: crouching cat (physics y = groundY-40 = 185) is safe;
-        // standing cat (physics y = groundY-80 = 145) is blocked.
-        // DOG_BELLY_GAP=60 → bodyBottom = obs.y+260-60 = 165; 145 < 165 → dies, 185 > 165 → safe.
-        const bodyBottom = obs.y + DOG_H - DOG_BELLY_GAP;
-        if (this.cat.y < bodyBottom) return true;
-      } else {
-        return true;
+        if (obs.type === "dog") {
+          // Belly gap: crouching cat (physics y=185) safe; standing (physics y=145) blocked.
+          const bodyBottom = obs.y + DOG_H - DOG_BELLY_GAP;
+          if (this.cat.y < bodyBottom) return true;
+        } else {
+          return true;
+        }
       }
     }
     return false;
   }
 
   // Cat visual hitbox — based on actual non-transparent pixel bounds of the cat sprite.
-  // Source bounds: x=0-18, y=2-19 in 20×20 at 4× scale = x=0-72, y=8-76 in 80×80.
-  // Sprite is rendered flipped, so after flip x offset becomes +8 from left.
+  // After flip, cat visual content spans:
+  //   x: cat.x+4  to cat.x+80  (source x=0-18 at 4× = 0-72px, flipped → +4 to +80)
+  //   y: cat.y+8  to cat.y+76  (source y=2-19 at 4×)
+  // Apply CAT_HIT_BUF on each side to avoid single-pixel edge kills.
   private getCatHitbox() {
     const { cat } = this;
-    const B = CAT_HIT_BUF;
+    const B = CAT_HIT_BUF; // = 4
     if (cat.state === "crouching") {
-      // Crouch sprite drawn at groundY - PNG_CROUCH_H (60px visual, 40px physics)
       const drawY = this.groundY - PNG_CROUCH_H;
-      return { x: cat.x + 8 + B, y: drawY + B, w: 64 - B, h: PNG_CROUCH_H - 2 * B };
+      return { x: cat.x + 4 + B, y: drawY + B, w: 76 - 2 * B, h: PNG_CROUCH_H - 2 * B };
     }
-    return { x: cat.x + 8 + B, y: cat.y + 8 + B, w: 64 - B, h: 60 - B };
+    // Standing / jumping: visual x=+4 to +80 (76px wide), y=+8 to +76 (68px tall)
+    return { x: cat.x + 4 + B, y: cat.y + 8 + B, w: 76 - 2 * B, h: 68 - 2 * B };
+    // → { x: cat.x+8, y: cat.y+12, w: 68, h: 60 }  right=cat.x+76, bottom=cat.y+72
   }
 
-  // Obstacle visual hitbox — exact rendered pixel bounds derived from sprite analysis.
-  // All obstacles are rendered flipped (facing left), so x is mirrored.
-  private getObsVisualHitbox(obs: Obstacle) {
+  // Returns multiple hitboxes per obstacle, each strictly inside the visible body.
+  // Rat source (frame 0): narrow head at top (y=23-27, x=8-24), wider body below (y=27-31, x=2-25).
+  // All obstacles rendered flipped (facing left) → x coords mirrored: x_screen = obs.x + W - src_x*scale.
+  private getObsHitboxes(obs: Obstacle): Array<{ x: number; y: number; w: number; h: number }> {
     if (obs.type === "small-mouse") {
-      // Source: x=1-25, y=21-31 in 32×32; rendered at SMALL_MOUSE_W × SMALL_MOUSE_H, flipped
       const sw = SMALL_MOUSE_W / 32, sh = SMALL_MOUSE_H / 32;
-      return {
-        x: obs.x + SMALL_MOUSE_W - 26 * sw,  // flip: left edge = W - rightmost_source_x
-        y: obs.y + 21 * sh,
-        w: 25 * sw,
-        h: 11 * sh,
-      };
+      const W = SMALL_MOUSE_W;
+      return [
+        // Upper narrow box: src x=8-24, y=23-27 (head / upper body)
+        { x: obs.x + W - 25 * sw, y: obs.y + 23 * sh, w: 17 * sw, h: 4 * sh },
+        // Lower wide box:  src x=2-25, y=27-31 (belly / legs)
+        { x: obs.x + W - 26 * sw, y: obs.y + 27 * sh, w: 24 * sw, h: 5 * sh },
+      ];
     }
     if (obs.type === "large-mouse") {
-      // Same source sprite, different render size
       const lw = LARGE_MOUSE_W / 32, lh = LARGE_MOUSE_H / 32;
-      return {
-        x: obs.x + LARGE_MOUSE_W - 26 * lw,
-        y: obs.y + 21 * lh,
-        w: 25 * lw,
-        h: 11 * lh,
-      };
+      const W = LARGE_MOUSE_W;
+      return [
+        { x: obs.x + W - 25 * lw, y: obs.y + 23 * lh, w: 17 * lw, h: 4 * lh },
+        { x: obs.x + W - 26 * lw, y: obs.y + 27 * lh, w: 24 * lw, h: 5 * lh },
+      ];
     }
-    // dog: source x=6-34, y=23-47 in 48×48; rendered at DOG_W × DOG_H, flipped
+    // Dog: source x=6-34, y=23-47 in 48×48; single box for the body
     const dw = DOG_W / 48, dh = DOG_H / 48;
-    return {
-      x: obs.x + DOG_W - 35 * dw,  // flip: left edge = W - (max_source_x+1)*scale
-      y: obs.y + 23 * dh,
-      w: 29 * dw,
-      h: 25 * dh,
-    };
+    return [{ x: obs.x + DOG_W - 35 * dw, y: obs.y + 23 * dh, w: 29 * dw, h: 25 * dh }];
   }
 
   private aabbOverlap(
