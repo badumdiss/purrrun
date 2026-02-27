@@ -35,10 +35,10 @@ const PNG_LEG_SQUISH = 4;   // compressed leg height in canvas px during crouch
 const PNG_CROUCH_H   = PNG_BODY_ROWS * (PNG_DISPLAY / PNG_FRAME_SRC) + PNG_LEG_SQUISH; // 60
 const PNG_TAIL_X     = 56;  // source col 14 × 4 = x where tail starts in canvas
 
-const SMALL_MOUSE_W = 172;
-const SMALL_MOUSE_H = 146;
-const LARGE_MOUSE_W = 270;
-const LARGE_MOUSE_H = 228;
+const SMALL_MOUSE_W = 108;
+const SMALL_MOUSE_H = 92;
+const LARGE_MOUSE_W = 170;
+const LARGE_MOUSE_H = 144;
 const DOG_W = 320;
 const DOG_H = 260;
 // Belly gap: must be > CAT_CROUCH_H (40) so crouching cat is safe,
