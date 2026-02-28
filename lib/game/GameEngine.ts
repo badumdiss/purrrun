@@ -40,7 +40,7 @@ const SMALL_MOUSE_H = 92;
 const LARGE_MOUSE_W = 170;
 const LARGE_MOUSE_H = 144;
 const DOG_W = 320;
-const DOG_H = 260;
+const DOG_H = 312; // +20% taller so cat cannot jump over
 // Belly gap: must be > CAT_CROUCH_H (40) so crouching cat is safe,
 //            and < CAT_H (80) so standing cat is blocked.
 const DOG_BELLY_GAP  = 60;  // must be > CAT_CROUCH_H (40) and < CAT_H (80)
@@ -73,6 +73,7 @@ interface Obstacle {
   type: ObstacleType;
   x: number; y: number; w: number; h: number;
   vy: number;
+  falling: boolean; // dog-only: triggered once cat passes under successfully
 }
 
 interface Cloud { x: number; y: number; w: number; speed: number; }
@@ -104,9 +105,12 @@ export class GameEngine {
 
   // PNG obstacle sprites
   private dogFrames: HTMLCanvasElement[] = [];
+  private dogDeathFrames: HTMLCanvasElement[] = [];
   private ratFrames: HTMLCanvasElement[] = [];
   private obsPngLoaded = false;
   private dogAnimFrame = 0;
+  private dogDeathAnimFrame = 0;
+  private dogDeathAnimTimer = 0;
   private ratAnimFrame = 0;
   private obsAnimTimer  = 0;
 
@@ -310,7 +314,7 @@ export class GameEngine {
       if (spawnX - (existing.x + existing.w) < CAT_W * 2) return;
     }
 
-    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0 };
+    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false };
     if (type === "small-mouse") { obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H; }
     else if (type === "large-mouse") { obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H; }
     else { obs.w = DOG_W; obs.h = DOG_H; }
@@ -327,9 +331,26 @@ export class GameEngine {
     const gameMove  = this.speed * (dt / 16);
     const mouseMove = gameMove + MOUSE_EXTRA_SPEED * (dt / 16);
 
-    // Dogs move at game scroll speed
+    // Dogs: always scroll left at game speed; trigger death anim when cat enters belly
     for (const obs of this.obstacles) {
-      if (obs.type === "dog") obs.x -= gameMove;
+      if (obs.type !== "dog") continue;
+      obs.x -= gameMove; // keep scrolling left whether falling or not — stops the freeze glitch
+
+      if (obs.falling) {
+        // Play death animation at 50 ms/frame; dog stays on ground and scrolls off left
+        this.dogDeathAnimTimer += dt;
+        if (this.dogDeathAnimTimer > 50) {
+          this.dogDeathAnimFrame = (this.dogDeathAnimFrame + 1) % Math.max(1, this.dogDeathFrames.length);
+          this.dogDeathAnimTimer = 0;
+        }
+        // No gravity — dog collapses in place on the ground
+      } else {
+        // Fire when dog's right visual edge passes cat's right edge (cat just entered belly).
+        // The hitbox collision zone has already ended at this point, so no double-jeopardy.
+        if (obs.x + obs.w < CAT_X + CAT_W) {
+          obs.falling = true;
+        }
+      }
     }
 
     // Mice: independent physics + gap/jump behaviour
@@ -345,18 +366,15 @@ export class GameEngine {
       // Move left faster than game scroll
       obs.x -= mouseMove;
 
-      // Right-side dog gap: only clamp mice that are to the RIGHT of the dog.
-      // Without the side-guard, mice that have already passed the dog get teleported
-      // back to minX (off-screen right), causing the "random disappearance" bug.
+      // Right-side dog gap: only clamp against dogs that are still standing (not falling).
+      // Falling dogs no longer block mice; only guard mice approaching from the right.
       for (const other of this.obstacles) {
-        if (other.type !== "dog") continue;
+        if (other.type !== "dog" || other.falling) continue;
         const dogRight = other.x + other.w;
-        if (obs.x > dogRight) {          // Mouse is approaching from the right — enforce DOG_GAP
+        if (obs.x > dogRight) {
           const minX = dogRight + DOG_GAP;
           if (obs.x < minX) obs.x = minX;
         }
-        // Left side: mice naturally move faster than dogs so the gap widens on its own;
-        // no clamp needed (a clamp here would push mice off-screen when the dog nears x=0).
       }
 
       // Jump over any obstacle immediately ahead — randomised trigger & force
@@ -364,7 +382,7 @@ export class GameEngine {
         for (const other of this.obstacles) {
           if (other === obs) continue;
           const gap = obs.x - (other.x + other.w);
-          if (gap >= 0 && gap < MOUSE_JUMP_DIST && Math.random() < 0.12) {
+          if (gap >= 0 && gap < MOUSE_JUMP_DIST && Math.random() < 0.35) {
             obs.vy = MOUSE_JUMP_FORCE * (0.85 + Math.random() * 0.3);
             break;
           }
@@ -389,6 +407,7 @@ export class GameEngine {
   private checkCollisions(): boolean {
     const catHit = this.getCatHitbox();
     for (const obs of this.obstacles) {
+      if (obs.falling) continue; // falling dog can no longer hurt the cat
       const boxes = this.getObsHitboxes(obs);
       for (const box of boxes) {
         if (!this.aabbOverlap(catHit, box)) continue;
@@ -444,10 +463,11 @@ export class GameEngine {
         { x: obs.x + W - 26 * lw, y: obs.y + 27 * lh, w: 24 * lw, h: 5 * lh },
       ];
     }
-    // Dog: source x=6-34, y=23-47 in 48×48; shrink by half-cat-length each side horizontally
+    // Dog: source x=6-34 in 48×48; top starts at row 15 so a jumping cat can't clear it.
+    // Width inset by half-cat-length each side so entry/exit feel fair.
     const dw = DOG_W / 48, dh = DOG_H / 48;
-    const dogInset = CAT_W / 2; // 40px inset each side → less sensitive collision
-    return [{ x: obs.x + DOG_W - 35 * dw + dogInset, y: obs.y + 23 * dh, w: 29 * dw - CAT_W, h: 25 * dh }];
+    const dogInset = CAT_W / 2; // 40px inset each side
+    return [{ x: obs.x + DOG_W - 35 * dw + dogInset, y: obs.y + 15 * dh, w: 29 * dw - CAT_W, h: 33 * dh }];
   }
 
   private aabbOverlap(
@@ -638,6 +658,21 @@ export class GameEngine {
     };
     dogImg.src = "/obstacles/dog.png";
 
+    // Dog 2 Death.png: 192×48 → 4 frames of 48×48
+    const dogDeathImg = new Image();
+    dogDeathImg.onload = () => {
+      const frames = dogDeathImg.width / DOG_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = DOG_W; c.height = DOG_H;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(dogDeathImg, i * DOG_FRAME_SRC, 0, DOG_FRAME_SRC, DOG_FRAME_SRC, 0, 0, DOG_W, DOG_H);
+        this.dogDeathFrames.push(c);
+      }
+    };
+    dogDeathImg.src = "/obstacles/dog_death.png";
+
     const ratImg = new Image();
     ratImg.onload = () => {
       const frames = ratImg.width / RAT_FRAME_SRC;
@@ -757,10 +792,15 @@ export class GameEngine {
   // ─── Dog ───────────────────────────────────────────────────────────────────
   private drawDog(ctx: CanvasRenderingContext2D, obs: Obstacle) {
     if (this.obsPngLoaded && this.dogFrames.length > 0) {
-      const sprite = this.dogFrames[this.dogAnimFrame % this.dogFrames.length];
+      const frames = obs.falling && this.dogDeathFrames.length > 0
+        ? this.dogDeathFrames
+        : this.dogFrames;
+      const frameIdx = obs.falling
+        ? this.dogDeathAnimFrame % frames.length
+        : this.dogAnimFrame % frames.length;
+      const sprite = frames[frameIdx];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
-      // Flip to face left
       ctx.translate(obs.x + obs.w, obs.y);
       ctx.scale(-1, 1);
       ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
