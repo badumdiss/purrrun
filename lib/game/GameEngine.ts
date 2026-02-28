@@ -52,6 +52,14 @@ const DOG_GAP           = CAT_W * 2;                   // clear zone each side o
 const MOUSE_JUMP_DIST   = SMALL_MOUSE_W;               // start jump check within one mouse-width
 const MIN_OBS_DELAY     = 600;                          // minimum ms between spawns (≥ 2-cat gap)
 
+// Bird — flies right to left at 2× rat total speed, spawns at aerial heights
+const BIRD_W = 160;  // similar width to large rat (170)
+const BIRD_H = 160;  // square (32×32 source at 5× scale)
+// Min bird spawn y: top of canvas area; max: just above crouching cat's head
+// groundY - CAT_CROUCH_H - BIRD_H = 225 - 40 - 160 = 25 (bottom of bird at crouching cat top)
+const BIRD_Y_MIN = 10;
+const BIRD_Y_MAX = 60;  // keeps bird at a height where it's always a threat to standing cat
+
 // Pixel-analysis-derived visual hitbox offsets (source bounds → canvas coords)
 // Cat  source: x=0-18, y=2-19 in 20×20 at 4× → x=0-72 y=8-76 in 80×80; flipped → x+=8
 // Rat  source: x=1-25, y=21-31 in 32×32; content in bottom ~34% of sprite
@@ -60,7 +68,7 @@ const CAT_HIT_BUF = 4; // small extra buffer on cat hitbox for playability
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type CatState = "running" | "jumping" | "double-jumping" | "crouching" | "dead";
-export type ObstacleType = "small-mouse" | "large-mouse" | "dog";
+export type ObstacleType = "small-mouse" | "large-mouse" | "dog" | "bird";
 
 interface Cat {
   x: number; y: number; w: number; h: number;
@@ -107,11 +115,13 @@ export class GameEngine {
   private dogFrames: HTMLCanvasElement[] = [];
   private dogDeathFrames: HTMLCanvasElement[] = [];
   private ratFrames: HTMLCanvasElement[] = [];
+  private birdFrames: HTMLCanvasElement[] = [];
   private obsPngLoaded = false;
   private dogAnimFrame = 0;
   private dogDeathAnimFrame = 0;
   private dogDeathAnimTimer = 0;
   private ratAnimFrame = 0;
+  private birdAnimFrame = 0;
   private obsAnimTimer  = 0;
 
   private crouchHeld = false;
@@ -254,9 +264,10 @@ export class GameEngine {
     // Obstacle animation frames
     this.obsAnimTimer += dt;
     if (this.obsAnimTimer > 100) {
-      this.dogAnimFrame = (this.dogAnimFrame + 1) % (this.dogFrames.length || 6);
-      this.ratAnimFrame = (this.ratAnimFrame + 1) % (this.ratFrames.length || 4);
-      this.obsAnimTimer = 0;
+      this.dogAnimFrame  = (this.dogAnimFrame  + 1) % (this.dogFrames.length  || 6);
+      this.ratAnimFrame  = (this.ratAnimFrame  + 1) % (this.ratFrames.length  || 4);
+      this.birdAnimFrame = (this.birdAnimFrame + 1) % (this.birdFrames.length || 6);
+      this.obsAnimTimer  = 0;
     }
 
     if (this.checkCollisions()) {
@@ -300,25 +311,42 @@ export class GameEngine {
     let type: ObstacleType;
     const rand = Math.random();
 
-    if (score < 200)      type = "small-mouse";
-    else if (score < 400) type = rand < 0.55 ? "small-mouse" : "large-mouse";
-    else {
-      if      (rand < 0.38) type = "small-mouse";
-      else if (rand < 0.65) type = "large-mouse";
-      else                  type = "dog";
+    if (score < 200) {
+      type = "small-mouse";
+    } else if (score < 400) {
+      if      (rand < 0.45) type = "small-mouse";
+      else if (rand < 0.80) type = "large-mouse";
+      else                  type = "bird";
+    } else {
+      if      (rand < 0.28) type = "small-mouse";
+      else if (rand < 0.50) type = "large-mouse";
+      else if (rand < 0.72) type = "dog";
+      else                  type = "bird";
     }
 
-    // Enforce mandatory 2-cat pixel gap from every visible obstacle's right edge
+    // Enforce mandatory 2-cat pixel gap from every visible ground obstacle's right edge
+    // (birds are airborne so they don't block ground spawns, but still need x-clearance)
     const spawnX = this.canvas.width + 30;
     for (const existing of this.obstacles) {
+      if (existing.type === "bird") continue; // birds don't block ground obstacle spacing
       if (spawnX - (existing.x + existing.w) < CAT_W * 2) return;
     }
 
     const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false };
-    if (type === "small-mouse") { obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H; }
-    else if (type === "large-mouse") { obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H; }
-    else { obs.w = DOG_W; obs.h = DOG_H; }
-    obs.y = this.groundY - obs.h;
+    if (type === "small-mouse") {
+      obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H;
+      obs.y = this.groundY - obs.h;
+    } else if (type === "large-mouse") {
+      obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H;
+      obs.y = this.groundY - obs.h;
+    } else if (type === "bird") {
+      obs.w = BIRD_W; obs.h = BIRD_H;
+      // Random aerial height — above the crouching cat's safe zone
+      obs.y = BIRD_Y_MIN + Math.random() * (BIRD_Y_MAX - BIRD_Y_MIN);
+    } else {
+      obs.w = DOG_W; obs.h = DOG_H;
+      obs.y = this.groundY - obs.h;
+    }
 
     this.obstacles.push(obs);
     this.lastObstacleTime = timestamp;
@@ -353,9 +381,15 @@ export class GameEngine {
       }
     }
 
+    // Birds: fly horizontally at 2× rat total speed, no gravity, no dog-gap clamping
+    for (const obs of this.obstacles) {
+      if (obs.type !== "bird") continue;
+      obs.x -= mouseMove; // same total speed as rat (was 2×, reduced by 50%)
+    }
+
     // Mice: independent physics + gap/jump behaviour
     for (const obs of this.obstacles) {
-      if (obs.type === "dog") continue;
+      if (obs.type === "dog" || obs.type === "bird") continue;
 
       // Vertical physics
       obs.vy += GRAVITY * (dt / 16);
@@ -408,6 +442,17 @@ export class GameEngine {
     const catHit = this.getCatHitbox();
     for (const obs of this.obstacles) {
       if (obs.falling) continue; // falling dog can no longer hurt the cat
+
+      if (obs.type === "bird") {
+        // Small central circle inside the bird body.
+        // Kill only when >50% of the cat's hitbox area lies inside it.
+        const bCX = obs.x + BIRD_W * 0.50;
+        const bCY = obs.y + BIRD_H * 0.52; // slightly below sprite centre = body
+        const bR  = BIRD_W * 0.13;         // small circle (~21 px for 160 px bird)
+        if (this.circleRectOverlapFraction(bCX, bCY, bR, catHit) > 0.50) return true;
+        continue;
+      }
+
       const boxes = this.getObsHitboxes(obs);
       for (const box of boxes) {
         if (!this.aabbOverlap(catHit, box)) continue;
@@ -422,6 +467,26 @@ export class GameEngine {
       }
     }
     return false;
+  }
+
+  // What fraction of a rectangle's area falls inside a circle?
+  // Uses a 7×7 uniform grid of sample points — good enough for gameplay hitboxes.
+  private circleRectOverlapFraction(
+    cx: number, cy: number, r: number,
+    rect: { x: number; y: number; w: number; h: number }
+  ): number {
+    const N = 7; // 49 sample points
+    const r2 = r * r;
+    let inside = 0;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        const px = rect.x + rect.w * (i + 0.5) / N;
+        const py = rect.y + rect.h * (j + 0.5) / N;
+        const dx = px - cx, dy = py - cy;
+        if (dx * dx + dy * dy <= r2) inside++;
+      }
+    }
+    return inside / (N * N);
   }
 
   // Cat visual hitbox — based on actual non-transparent pixel bounds of the cat sprite.
@@ -463,6 +528,7 @@ export class GameEngine {
         { x: obs.x + W - 26 * lw, y: obs.y + 27 * lh, w: 24 * lw, h: 5 * lh },
       ];
     }
+
     // Dog: source x=6-34 in 48×48; top starts at row 15 so a jumping cat can't clear it.
     // Width inset by half-cat-length each side so entry/exit feel fair.
     const dw = DOG_W / 48, dh = DOG_H / 48;
@@ -507,6 +573,7 @@ export class GameEngine {
     for (const obs of this.obstacles) {
       if      (obs.type === "small-mouse") this.drawMouse(ctx, obs, false);
       else if (obs.type === "large-mouse") this.drawMouse(ctx, obs, true);
+      else if (obs.type === "bird")        this.drawBird(ctx, obs);
       else                                 this.drawDog(ctx, obs);
     }
 
@@ -637,11 +704,12 @@ export class GameEngine {
 
   // ─── Obstacle PNG loader ────────────────────────────────────────────────────
   private loadObstaclePngs() {
-    const DOG_FRAME_SRC = 48; // Dog 2 Walk.png: 288×48 → 6 frames of 48×48
-    const RAT_FRAME_SRC = 32; // Rat 1 Walk.png: 128×32 → 4 frames of 32×32
+    const DOG_FRAME_SRC  = 48; // Dog 2 Walk.png: 288×48 → 6 frames of 48×48
+    const RAT_FRAME_SRC  = 32; // Rat 1 Walk.png: 128×32 → 4 frames of 32×32
+    const BIRD_FRAME_SRC = 32; // Bird 2 Walk.png: 192×32 → 6 frames of 32×32
 
-    let dogReady = false, ratReady = false;
-    const check = () => { if (dogReady && ratReady) this.obsPngLoaded = true; };
+    let dogReady = false, ratReady = false, birdReady = false;
+    const check = () => { if (dogReady && ratReady && birdReady) this.obsPngLoaded = true; };
 
     const dogImg = new Image();
     dogImg.onload = () => {
@@ -687,6 +755,21 @@ export class GameEngine {
       ratReady = true; check();
     };
     ratImg.src = "/obstacles/rat.png";
+
+    const birdImg = new Image();
+    birdImg.onload = () => {
+      const frames = birdImg.width / BIRD_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = BIRD_W; c.height = BIRD_H;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(birdImg, i * BIRD_FRAME_SRC, 0, BIRD_FRAME_SRC, BIRD_FRAME_SRC, 0, 0, BIRD_W, BIRD_H);
+        this.birdFrames.push(c);
+      }
+      birdReady = true; check();
+    };
+    birdImg.src = "/obstacles/bird.png";
   }
 
   // ─── Cat drawing ───────────────────────────────────────────────────────────
@@ -744,6 +827,33 @@ export class GameEngine {
     ctx.scale(-1, 1);
     ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
 
+    ctx.restore();
+  }
+
+  // ─── Bird ──────────────────────────────────────────────────────────────────
+  private drawBird(ctx: CanvasRenderingContext2D, obs: Obstacle) {
+    if (this.obsPngLoaded && this.birdFrames.length > 0) {
+      const sprite = this.birdFrames[this.birdAnimFrame % this.birdFrames.length];
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      // Flip so bird faces left (direction of travel)
+      ctx.translate(obs.x + obs.w, obs.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
+      ctx.restore();
+      return;
+    }
+    // Pixel-art fallback: simple winged silhouette
+    const { x, y, w, h } = obs;
+    ctx.save();
+    ctx.fillStyle = "#5a3a7a";
+    ctx.beginPath();
+    ctx.ellipse(x + w * 0.5, y + h * 0.55, w * 0.2, h * 0.18, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.2, y + h * 0.5);
+    ctx.quadraticCurveTo(x + w * 0.5, y + h * 0.15, x + w * 0.8, y + h * 0.5);
+    ctx.fill();
     ctx.restore();
   }
 
