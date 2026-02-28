@@ -254,6 +254,19 @@ function FillScreenCat({ onDone }: { onDone: () => void }) {
     const duration  = 900;                            // ms
     const cx = W / 2, cy = H * 0.62;                 // roughly where button sits
 
+    // Eye position in the 20×20 source sprite (frame 1, cat faces left → head on left side)
+    // After flip (cat drawn facing right), source x=4 lands at: tx - size*(4/20) = tx - size*0.2
+    // We want that point to converge to (W/2, H/2) as the cat fills the screen.
+    const eyeXFrac = 4 / 20;  // 0.2
+    const eyeYFrac = 7 / 20;  // 0.35
+
+    // Initial translation (t=0, size=startSize): cat centred at (cx, cy)
+    const txInit = cx + startSize / 2;
+    const tyInit = cy - startSize / 2;
+    // Final translation (t=1, size=maxSize): eye at (W/2, H/2)
+    const txFinal = W / 2 + maxSize * eyeXFrac;
+    const tyFinal = H / 2 - maxSize * eyeYFrac;
+
     let stillFrame: HTMLCanvasElement | null = null;
     let rafId: number;
 
@@ -272,13 +285,17 @@ function FillScreenCat({ onDone }: { onDone: () => void }) {
         const ease = t * t;                            // ease-in = starts slow, accelerates
         const size  = startSize + (maxSize - startSize) * ease;
 
+        // Interpolate translation so eye tracks from initial position → screen centre
+        const tx = txInit + ease * (txFinal - txInit);
+        const ty = tyInit + ease * (tyFinal - tyInit);
+
         ctx.fillStyle = "#06040f";
         ctx.fillRect(0, 0, W, H);
 
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        // Cat faces right — flip horizontally
-        ctx.translate(cx + size / 2, cy - size / 2);
+        // Cat faces right — flip horizontally around (tx, ty)
+        ctx.translate(tx, ty);
         ctx.scale(-1, 1);
         ctx.drawImage(stillFrame!, 0, 0, size, size);
         ctx.restore();
@@ -456,10 +473,11 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
           🏆 See Leaderboard
         </button>
 
-        <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-3 gap-2 text-center">
+        <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-2 gap-2 text-center">
           {[
             { key: "SPACE/↑",     desc: "jump" },
             { key: "SPACE/↑ ×2",  desc: "double jump" },
+            { key: "SPACE/↑ ×3",  desc: "triple jump" },
             { key: "↓",           desc: "crouch" },
           ].map(({ key, desc }) => (
             <div key={key}>

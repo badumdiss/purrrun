@@ -693,6 +693,9 @@ export class GameEngine {
   private drawCat(ctx: CanvasRenderingContext2D) {
     const { cat } = this;
 
+    // After death, the React overlay shows the ghost cat — hide the original here.
+    if (cat.state === "dead") return;
+
     if (this.catPngLoaded) {
       ctx.save();
       ctx.imageSmoothingEnabled = false;

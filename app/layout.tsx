@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "A cat side-scroller where you jump over evil mice and crouch under dogs.",
   openGraph: {
     title: "PURR-RUN",
-    description: "The cat side-scroller. Jump, double-jump, and crouch your way to glory.",
+    description: "The cat side-scroller. Jump, double-jump, triple-jump, and crouch your way to glory.",
     type: "website",
   },
 };

@@ -4,6 +4,133 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { GameEngine } from "@/lib/game/GameEngine";
 import { LeaderboardEntry } from "@/lib/supabase";
 
+// ── Off-white ghost cat flying around the game-over background ─────────────
+function FlyingGhostCat() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current!;
+    const W = window.innerWidth, H = window.innerHeight;
+    canvas.width  = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d")!;
+
+    const CAT_SIZE = 56;
+    let catX = 80 + Math.random() * (W - CAT_SIZE - 160);
+    let catY = 20 + Math.random() * (H - CAT_SIZE - 40);
+    let catVX = (Math.random() > 0.5 ? 1 : -1) * (1.4 + Math.random() * 2.0);
+    let catVY = (Math.random() > 0.5 ? 1 : -1) * (0.8 + Math.random() * 1.6);
+    let facingRight = catVX > 0;
+
+    let runFrames: HTMLCanvasElement[] = [];
+    let frameIdx = 0;
+    let frameTimer = 0;
+    let loadedCount = 0;
+    let rafId: number;
+    let lastTs = -1;
+
+    function buildGhostFrame(img: HTMLImageElement, srcX: number): HTMLCanvasElement {
+      const tmp = document.createElement("canvas");
+      tmp.width = tmp.height = CAT_SIZE;
+      const tc = tmp.getContext("2d")!;
+      tc.imageSmoothingEnabled = false;
+      tc.drawImage(img, srcX, 0, 20, 20, 0, 0, CAT_SIZE, CAT_SIZE);
+      // Tint off-white: overlay only where cat pixels exist
+      tc.globalCompositeOperation = "source-atop";
+      tc.fillStyle = "rgba(240, 237, 255, 0.72)";
+      tc.fillRect(0, 0, CAT_SIZE, CAT_SIZE);
+      return tmp;
+    }
+
+    function startAnim() {
+      loadedCount++;
+      if (loadedCount < 2) return;
+
+      const animate = (ts: number) => {
+        if (lastTs < 0) lastTs = ts;
+        const dt = Math.min(ts - lastTs, 50);
+        lastTs = ts;
+
+        catX += catVX * (dt / 16);
+        catY += catVY * (dt / 16);
+
+        // Bounce off walls
+        if (catX < 0) { catX = 0; catVX = Math.abs(catVX); facingRight = true; }
+        if (catX + CAT_SIZE > W) { catX = W - CAT_SIZE; catVX = -Math.abs(catVX); facingRight = false; }
+        if (catY < 0) { catY = 0; catVY = Math.abs(catVY); }
+        if (catY + CAT_SIZE > H) { catY = H - CAT_SIZE; catVY = -Math.abs(catVY); }
+
+        frameTimer += dt;
+        if (frameTimer > 100) { frameIdx = (frameIdx + 1) % Math.max(1, runFrames.length); frameTimer = 0; }
+
+        ctx.clearRect(0, 0, W, H);
+
+        const frame = runFrames[frameIdx];
+        if (!frame) { rafId = requestAnimationFrame(animate); return; }
+
+        // Halo above cat
+        const haloCX = catX + CAT_SIZE / 2;
+        const haloY  = catY - CAT_SIZE * 0.08;
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 218, 40, 0.92)";
+        ctx.lineWidth   = CAT_SIZE * 0.09;
+        ctx.shadowColor = "rgba(255, 218, 40, 0.6)";
+        ctx.shadowBlur  = 12;
+        ctx.beginPath();
+        ctx.ellipse(haloCX, haloY, CAT_SIZE * 0.3, CAT_SIZE * 0.095, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        // Ghost cat (semi-transparent)
+        ctx.save();
+        ctx.globalAlpha = 0.82;
+        ctx.imageSmoothingEnabled = false;
+        if (facingRight) {
+          ctx.translate(catX + CAT_SIZE, catY);
+          ctx.scale(-1, 1);
+          ctx.drawImage(frame, 0, 0, CAT_SIZE, CAT_SIZE);
+        } else {
+          ctx.drawImage(frame, catX, catY, CAT_SIZE, CAT_SIZE);
+        }
+        ctx.restore();
+
+        rafId = requestAnimationFrame(animate);
+      };
+
+      rafId = requestAnimationFrame(animate);
+    }
+
+    const walkImg = new Image();
+    walkImg.onload = () => {
+      const frames = walkImg.width / 20;
+      for (let i = 0; i < frames; i++) runFrames.push(buildGhostFrame(walkImg, i * 20));
+      startAnim();
+    };
+    walkImg.src = "/cats/Walk3.png";
+
+    // Second load trigger (so loadedCount hits 2 when both are "ready")
+    const stillImg = new Image();
+    stillImg.onload = () => startAnim();
+    stillImg.src = "/cats/Still.png";
+
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        imageRendering: "pixelated",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
 interface Props {
   playerName: string;
   onQuit: () => void;
@@ -196,12 +323,15 @@ export default function CatGame({ playerName, onQuit }: Props) {
 
         {/* Controls hint overlay */}
         {showHint && !gameOver && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex gap-4 text-xs font-mono pointer-events-none">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex gap-2 text-xs font-mono pointer-events-none">
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
               <kbd className="text-orange-400">SPACE/↑</kbd> jump
             </span>
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
-              <kbd className="text-orange-400">SPACE/↑ ×2</kbd> double
+              <kbd className="text-orange-400">×2</kbd> double
+            </span>
+            <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
+              <kbd className="text-orange-400">×3</kbd> triple
             </span>
             <span className="bg-black/60 border border-purple-700 text-purple-300 px-2 py-1 rounded">
               <kbd className="text-orange-400">↓</kbd> crouch
@@ -209,11 +339,15 @@ export default function CatGame({ playerName, onQuit }: Props) {
           </div>
         )}
 
-        {/* Game over overlay */}
+        {/* Game over overlay — fixed to viewport so it never gets clipped by the canvas box */}
         {gameOver && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-xl">
-            <div className="bg-black/80 border border-purple-700 rounded-2xl p-8 text-center backdrop-blur-sm w-full max-w-sm mx-4 shadow-[0_0_40px_rgba(120,0,255,0.4)]">
-              <div className="text-4xl mb-2">😿</div>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            style={{ background: "rgba(6,4,15,0.82)" }}
+          >
+            {/* Ghost cat flying across the full screen */}
+            <FlyingGhostCat />
+            <div className="relative z-10 bg-black/80 border border-purple-700 rounded-2xl p-8 text-center backdrop-blur-sm w-full max-w-sm mx-4 shadow-[0_0_40px_rgba(120,0,255,0.4)]">
               <h2 className="text-2xl font-bold text-red-400 font-mono mb-1">
                 Game Over
               </h2>
