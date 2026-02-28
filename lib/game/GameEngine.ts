@@ -705,14 +705,7 @@ export class GameEngine {
         ctx.shadowBlur  = 16;
       }
 
-      if (cat.state === "dead") {
-        // Rotate around centre then flip so cat faces right while tumbling
-        const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
-        ctx.translate(cx, cy);
-        ctx.rotate(cat.deathAngle);
-        ctx.scale(-1, 1);
-        ctx.drawImage(this.catStillPng!, -cat.w / 2, -cat.h / 2, cat.w, cat.h);
-      } else if (cat.state === "crouching") {
+      if (cat.state === "crouching") {
         // Body stays full size; only legs are tiny; tail is a straight stub.
         // Visual height = PNG_CROUCH_H (60 px); feet land at groundY.
         const drawY = this.groundY - PNG_CROUCH_H;
@@ -735,8 +728,7 @@ export class GameEngine {
 
     // ── Pixel-art fallback ──────────────────────────────────────────────────
     let sprite: HTMLCanvasElement;
-    if      (cat.state === "dead")                                      sprite = this.spriteDead;
-    else if (cat.state === "crouching")                                 sprite = this.spriteCrouch;
+    if      (cat.state === "crouching")                                 sprite = this.spriteCrouch;
     else if (cat.state === "jumping" || cat.state === "double-jumping") sprite = this.spriteJump;
     else sprite = this.spriteRun[cat.animFrame % this.spriteRun.length];
 
@@ -748,17 +740,9 @@ export class GameEngine {
       ctx.shadowBlur  = 16;
     }
 
-    if (cat.state === "dead") {
-      const cx = cat.x + cat.w / 2, cy = cat.y + cat.h / 2;
-      ctx.translate(cx, cy);
-      ctx.rotate(cat.deathAngle);
-      ctx.scale(-1, 1);
-      ctx.drawImage(sprite, -cat.w / 2, -cat.h / 2, cat.w, cat.h);
-    } else {
-      ctx.translate(cat.x + cat.w, cat.y);
-      ctx.scale(-1, 1);
-      ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
-    }
+    ctx.translate(cat.x + cat.w, cat.y);
+    ctx.scale(-1, 1);
+    ctx.drawImage(sprite, 0, 0, cat.w, cat.h);
 
     ctx.restore();
   }
