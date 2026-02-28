@@ -52,13 +52,22 @@ const DOG_GAP           = CAT_W * 2;                   // clear zone each side o
 const MOUSE_JUMP_DIST   = SMALL_MOUSE_W;               // start jump check within one mouse-width
 const MIN_OBS_DELAY     = 600;                          // minimum ms between spawns (≥ 2-cat gap)
 
-// Bird — flies right to left at 2× rat total speed, spawns at aerial heights
-const BIRD_W = 160;  // similar width to large rat (170)
-const BIRD_H = 160;  // square (32×32 source at 5× scale)
-// Min bird spawn y: top of canvas area; max: just above crouching cat's head
-// groundY - CAT_CROUCH_H - BIRD_H = 225 - 40 - 160 = 25 (bottom of bird at crouching cat top)
+// Bird — flies right to left at rat speed, spawns at mid-aerial heights
+const BIRD_W = 160;
+const BIRD_H = 160;
 const BIRD_Y_MIN = 10;
-const BIRD_Y_MAX = 60;  // keeps bird at a height where it's always a threat to standing cat
+const BIRD_Y_MAX = 60;
+
+// Pigeon (Bird 1) — flies only at very top; drops one aimed poop as it passes over the cat
+const PIGEON_W = 160;
+const PIGEON_H = 160;
+const PIGEON_Y_MIN = -110;  // mostly above canvas; only belly visible at screen top
+const PIGEON_Y_MAX =  -70;
+
+// Poop projectile — falls straight down from above the cat
+const POOP_R        = 12;
+const POOP_GRAVITY  = 0.40;  // gentle fall → ~400 ms reaction time from belly to ground
+const POOP_START_VY = 0.5;
 
 // Pixel-analysis-derived visual hitbox offsets (source bounds → canvas coords)
 // Cat  source: x=0-18, y=2-19 in 20×20 at 4× → x=0-72 y=8-76 in 80×80; flipped → x+=8
@@ -68,7 +77,7 @@ const CAT_HIT_BUF = 4; // small extra buffer on cat hitbox for playability
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type CatState = "running" | "jumping" | "double-jumping" | "crouching" | "dead";
-export type ObstacleType = "small-mouse" | "large-mouse" | "dog" | "bird";
+export type ObstacleType = "small-mouse" | "large-mouse" | "dog" | "bird" | "pigeon";
 
 interface Cat {
   x: number; y: number; w: number; h: number;
@@ -81,7 +90,14 @@ interface Obstacle {
   type: ObstacleType;
   x: number; y: number; w: number; h: number;
   vy: number;
-  falling: boolean; // dog-only: triggered once cat passes under successfully
+  falling: boolean;   // dog-only
+  poopTimer: number;  // pigeon-only: ms until next poop drop
+}
+
+interface Poop {
+  x: number; y: number;
+  vx: number; vy: number;
+  r: number;
 }
 
 interface Cloud { x: number; y: number; w: number; speed: number; }
@@ -116,13 +132,17 @@ export class GameEngine {
   private dogDeathFrames: HTMLCanvasElement[] = [];
   private ratFrames: HTMLCanvasElement[] = [];
   private birdFrames: HTMLCanvasElement[] = [];
+  private pigeonFrames: HTMLCanvasElement[] = [];
   private obsPngLoaded = false;
   private dogAnimFrame = 0;
   private dogDeathAnimFrame = 0;
   private dogDeathAnimTimer = 0;
   private ratAnimFrame = 0;
   private birdAnimFrame = 0;
+  private pigeonAnimFrame = 0;
   private obsAnimTimer  = 0;
+
+  private poops: Poop[] = [];
 
   private crouchHeld = false;
   private speed = INITIAL_SPEED;
@@ -264,10 +284,11 @@ export class GameEngine {
     // Obstacle animation frames
     this.obsAnimTimer += dt;
     if (this.obsAnimTimer > 100) {
-      this.dogAnimFrame  = (this.dogAnimFrame  + 1) % (this.dogFrames.length  || 6);
-      this.ratAnimFrame  = (this.ratAnimFrame  + 1) % (this.ratFrames.length  || 4);
-      this.birdAnimFrame = (this.birdAnimFrame + 1) % (this.birdFrames.length || 6);
-      this.obsAnimTimer  = 0;
+      this.dogAnimFrame    = (this.dogAnimFrame    + 1) % (this.dogFrames.length    || 6);
+      this.ratAnimFrame    = (this.ratAnimFrame    + 1) % (this.ratFrames.length    || 4);
+      this.birdAnimFrame   = (this.birdAnimFrame   + 1) % (this.birdFrames.length   || 6);
+      this.pigeonAnimFrame = (this.pigeonAnimFrame + 1) % (this.pigeonFrames.length || 6);
+      this.obsAnimTimer    = 0;
     }
 
     if (this.checkCollisions()) {
@@ -314,25 +335,27 @@ export class GameEngine {
     if (score < 200) {
       type = "small-mouse";
     } else if (score < 400) {
-      if      (rand < 0.45) type = "small-mouse";
-      else if (rand < 0.80) type = "large-mouse";
-      else                  type = "bird";
+      if      (rand < 0.42) type = "small-mouse";
+      else if (rand < 0.75) type = "large-mouse";
+      else if (rand < 0.90) type = "bird";
+      else                  type = "pigeon";
     } else {
-      if      (rand < 0.28) type = "small-mouse";
-      else if (rand < 0.50) type = "large-mouse";
-      else if (rand < 0.72) type = "dog";
-      else                  type = "bird";
+      if      (rand < 0.25) type = "small-mouse";
+      else if (rand < 0.45) type = "large-mouse";
+      else if (rand < 0.65) type = "dog";
+      else if (rand < 0.82) type = "bird";
+      else                  type = "pigeon";
     }
 
     // Enforce mandatory 2-cat pixel gap from every visible ground obstacle's right edge
     // (birds are airborne so they don't block ground spawns, but still need x-clearance)
     const spawnX = this.canvas.width + 30;
     for (const existing of this.obstacles) {
-      if (existing.type === "bird") continue; // birds don't block ground obstacle spacing
+      if (existing.type === "bird" || existing.type === "pigeon") continue; // airborne — don't block ground spacing
       if (spawnX - (existing.x + existing.w) < CAT_W * 2) return;
     }
 
-    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false };
+    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false, poopTimer: 0 };
     if (type === "small-mouse") {
       obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H;
       obs.y = this.groundY - obs.h;
@@ -341,8 +364,11 @@ export class GameEngine {
       obs.y = this.groundY - obs.h;
     } else if (type === "bird") {
       obs.w = BIRD_W; obs.h = BIRD_H;
-      // Random aerial height — above the crouching cat's safe zone
       obs.y = BIRD_Y_MIN + Math.random() * (BIRD_Y_MAX - BIRD_Y_MIN);
+    } else if (type === "pigeon") {
+      obs.w = PIGEON_W; obs.h = PIGEON_H;
+      obs.y = PIGEON_Y_MIN + Math.random() * (PIGEON_Y_MAX - PIGEON_Y_MIN);
+      obs.poopTimer = 1; // sentinel: fire once when pigeon centre-x crosses over cat
     } else {
       obs.w = DOG_W; obs.h = DOG_H;
       obs.y = this.groundY - obs.h;
@@ -381,15 +407,44 @@ export class GameEngine {
       }
     }
 
-    // Birds: fly horizontally at 2× rat total speed, no gravity, no dog-gap clamping
+    // Birds: fly horizontally at rat speed, no gravity
     for (const obs of this.obstacles) {
       if (obs.type !== "bird") continue;
-      obs.x -= mouseMove; // same total speed as rat (was 2×, reduced by 50%)
+      obs.x -= mouseMove;
     }
+
+    // Pigeons: fly at very top at rat speed; fire ONE aimed poop per screen pass
+    // (when pigeon centre-x crosses directly over cat centre-x).
+    const catCX = CAT_X + CAT_W * 0.5;
+    for (const obs of this.obstacles) {
+      if (obs.type !== "pigeon") continue;
+      obs.x -= mouseMove;
+      if (obs.poopTimer === 1) {
+        const pigeonCX = obs.x + PIGEON_W * 0.5;
+        // Fire the moment the pigeon passes directly above the cat (right-to-left cross)
+        if (pigeonCX <= catCX) {
+          this.poops.push({
+            x:  pigeonCX,
+            y:  obs.y + PIGEON_H,  // belly of pigeon
+            vx: 0,                 // falls straight down — aimed since fired from directly above
+            vy: POOP_START_VY,
+            r:  POOP_R,
+          });
+          obs.poopTimer = 0; // mark as fired; won't fire again this pass
+        }
+      }
+    }
+
+    // Poop: falls with gravity; removed when it hits ground or scrolls off-screen
+    for (const p of this.poops) {
+      p.vy += POOP_GRAVITY * (dt / 16);
+      p.y  += p.vy        * (dt / 16);
+    }
+    this.poops = this.poops.filter(p => p.y - p.r < this.groundY && p.x + p.r > -10);
 
     // Mice: independent physics + gap/jump behaviour
     for (const obs of this.obstacles) {
-      if (obs.type === "dog" || obs.type === "bird") continue;
+      if (obs.type === "dog" || obs.type === "bird" || obs.type === "pigeon") continue;
 
       // Vertical physics
       obs.vy += GRAVITY * (dt / 16);
@@ -440,16 +495,23 @@ export class GameEngine {
 
   private checkCollisions(): boolean {
     const catHit = this.getCatHitbox();
-    for (const obs of this.obstacles) {
-      if (obs.falling) continue; // falling dog can no longer hurt the cat
 
-      if (obs.type === "bird") {
-        // Small central circle inside the bird body.
-        // Kill only when >50% of the cat's hitbox area lies inside it.
-        const bCX = obs.x + BIRD_W * 0.50;
-        const bCY = obs.y + BIRD_H * 0.52; // slightly below sprite centre = body
-        const bR  = BIRD_W * 0.13;         // small circle (~21 px for 160 px bird)
-        if (this.circleRectOverlapFraction(bCX, bCY, bR, catHit) > 0.50) return true;
+    // Poop — kills running/jumping cat; crouching cat is always immune
+    if (this.cat.state !== "crouching") {
+      for (const p of this.poops) {
+        if (this.circleRectOverlaps(p.x, p.y, p.r, catHit)) return true;
+      }
+    }
+
+    for (const obs of this.obstacles) {
+      if (obs.falling) continue;
+
+      if (obs.type === "bird" || obs.type === "pigeon") {
+        // Small central circle; kill only when >50% of cat body overlaps
+        const W  = obs.type === "bird" ? BIRD_W : PIGEON_W;
+        const H  = obs.type === "bird" ? BIRD_H : PIGEON_H;
+        const bR = W * 0.13;
+        if (this.circleRectOverlapFraction(obs.x + W * 0.5, obs.y + H * 0.52, bR, catHit) > 0.50) return true;
         continue;
       }
 
@@ -487,6 +549,17 @@ export class GameEngine {
       }
     }
     return inside / (N * N);
+  }
+
+  // True if circle (cx,cy,r) overlaps the rectangle at all — closest-point test.
+  private circleRectOverlaps(
+    cx: number, cy: number, r: number,
+    rect: { x: number; y: number; w: number; h: number }
+  ): boolean {
+    const nearX = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+    const nearY = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+    const dx = cx - nearX, dy = cy - nearY;
+    return dx * dx + dy * dy <= r * r;
   }
 
   // Cat visual hitbox — based on actual non-transparent pixel bounds of the cat sprite.
@@ -574,9 +647,11 @@ export class GameEngine {
       if      (obs.type === "small-mouse") this.drawMouse(ctx, obs, false);
       else if (obs.type === "large-mouse") this.drawMouse(ctx, obs, true);
       else if (obs.type === "bird")        this.drawBird(ctx, obs);
+      else if (obs.type === "pigeon")      this.drawPigeon(ctx, obs);
       else                                 this.drawDog(ctx, obs);
     }
 
+    this.drawPoops(ctx);
     this.drawCat(ctx);
     this.drawHUD(ctx, W);
   }
@@ -704,12 +779,13 @@ export class GameEngine {
 
   // ─── Obstacle PNG loader ────────────────────────────────────────────────────
   private loadObstaclePngs() {
-    const DOG_FRAME_SRC  = 48; // Dog 2 Walk.png: 288×48 → 6 frames of 48×48
-    const RAT_FRAME_SRC  = 32; // Rat 1 Walk.png: 128×32 → 4 frames of 32×32
-    const BIRD_FRAME_SRC = 32; // Bird 2 Walk.png: 192×32 → 6 frames of 32×32
+    const DOG_FRAME_SRC    = 48; // Dog 2 Walk.png:    288×48 → 6 frames of 48×48
+    const RAT_FRAME_SRC    = 32; // Rat 1 Walk.png:    128×32 → 4 frames of 32×32
+    const BIRD_FRAME_SRC   = 32; // Bird 2 Walk.png:   192×32 → 6 frames of 32×32
+    const PIGEON_FRAME_SRC = 32; // Bird 1 Walk.png:   192×32 → 6 frames of 32×32
 
-    let dogReady = false, ratReady = false, birdReady = false;
-    const check = () => { if (dogReady && ratReady && birdReady) this.obsPngLoaded = true; };
+    let dogReady = false, ratReady = false, birdReady = false, pigeonReady = false;
+    const check = () => { if (dogReady && ratReady && birdReady && pigeonReady) this.obsPngLoaded = true; };
 
     const dogImg = new Image();
     dogImg.onload = () => {
@@ -770,6 +846,21 @@ export class GameEngine {
       birdReady = true; check();
     };
     birdImg.src = "/obstacles/bird.png";
+
+    const pigeonImg = new Image();
+    pigeonImg.onload = () => {
+      const frames = pigeonImg.width / PIGEON_FRAME_SRC;
+      for (let i = 0; i < frames; i++) {
+        const c = document.createElement("canvas");
+        c.width = PIGEON_W; c.height = PIGEON_H;
+        const cx = c.getContext("2d")!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(pigeonImg, i * PIGEON_FRAME_SRC, 0, PIGEON_FRAME_SRC, PIGEON_FRAME_SRC, 0, 0, PIGEON_W, PIGEON_H);
+        this.pigeonFrames.push(c);
+      }
+      pigeonReady = true; check();
+    };
+    pigeonImg.src = "/obstacles/pigeon.png";
   }
 
   // ─── Cat drawing ───────────────────────────────────────────────────────────
@@ -855,6 +946,54 @@ export class GameEngine {
     ctx.quadraticCurveTo(x + w * 0.5, y + h * 0.15, x + w * 0.8, y + h * 0.5);
     ctx.fill();
     ctx.restore();
+  }
+
+  // ─── Pigeon ────────────────────────────────────────────────────────────────
+  private drawPigeon(ctx: CanvasRenderingContext2D, obs: Obstacle) {
+    if (this.obsPngLoaded && this.pigeonFrames.length > 0) {
+      const sprite = this.pigeonFrames[this.pigeonAnimFrame % this.pigeonFrames.length];
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      // Flip so pigeon faces left (direction of travel)
+      ctx.translate(obs.x + obs.w, obs.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
+      ctx.restore();
+      return;
+    }
+    // Pixel-art fallback: darker silhouette to distinguish from bird
+    const { x, y, w, h } = obs;
+    ctx.save();
+    ctx.fillStyle = "#3a2a5a";
+    ctx.beginPath();
+    ctx.ellipse(x + w * 0.5, y + h * 0.55, w * 0.18, h * 0.16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.2, y + h * 0.5);
+    ctx.quadraticCurveTo(x + w * 0.5, y + h * 0.18, x + w * 0.8, y + h * 0.5);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ─── Poop projectiles ──────────────────────────────────────────────────────
+  private drawPoops(ctx: CanvasRenderingContext2D) {
+    for (const p of this.poops) {
+      ctx.save();
+      // White splat — circle with a slight highlight
+      ctx.fillStyle = "#e8e8e8";
+      ctx.shadowColor = "rgba(255,255,255,0.5)";
+      ctx.shadowBlur = 4;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+      // Tiny highlight
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(p.x - p.r * 0.3, p.y - p.r * 0.3, p.r * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   // ─── Mouse / Rat ───────────────────────────────────────────────────────────
