@@ -45,6 +45,13 @@ const DOG_H = 260;
 //            and < CAT_H (80) so standing cat is blocked.
 const DOG_BELLY_GAP  = 60;  // must be > CAT_CROUCH_H (40) and < CAT_H (80)
 
+// Mouse autonomous behaviour
+const MOUSE_JUMP_FORCE  = JUMP_FORCE * Math.sqrt(0.2); // 20% of cat jump height ≈ -8.03
+const MOUSE_EXTRA_SPEED = 2.4;                          // extra px/16ms beyond game scroll (+20%)
+const DOG_GAP           = CAT_W * 2;                   // clear zone each side of dog (2× cat body)
+const MOUSE_JUMP_DIST   = SMALL_MOUSE_W;               // start jump check within one mouse-width
+const MIN_OBS_DELAY     = 600;                          // minimum ms between spawns (≥ 2-cat gap)
+
 // Pixel-analysis-derived visual hitbox offsets (source bounds → canvas coords)
 // Cat  source: x=0-18, y=2-19 in 20×20 at 4× → x=0-72 y=8-76 in 80×80; flipped → x+=8
 // Rat  source: x=1-25, y=21-31 in 32×32; content in bottom ~34% of sprite
@@ -65,6 +72,7 @@ interface Cat {
 interface Obstacle {
   type: ObstacleType;
   x: number; y: number; w: number; h: number;
+  vy: number;
 }
 
 interface Cloud { x: number; y: number; w: number; speed: number; }
@@ -173,6 +181,10 @@ export class GameEngine {
     } else if (this.cat.jumpCount === 1) {
       this.cat.vy = DOUBLE_JUMP_FORCE;
       this.cat.jumpCount = 2;
+      this.cat.state = "double-jumping";
+    } else if (this.cat.jumpCount === 2) {
+      this.cat.vy = DOUBLE_JUMP_FORCE;
+      this.cat.jumpCount = 3;
       this.cat.state = "double-jumping";
     }
   }
@@ -292,7 +304,13 @@ export class GameEngine {
       else                  type = "dog";
     }
 
-    const obs: Obstacle = { type, x: this.canvas.width + 30, y: 0, w: 0, h: 0 };
+    // Enforce mandatory 2-cat pixel gap from every visible obstacle's right edge
+    const spawnX = this.canvas.width + 30;
+    for (const existing of this.obstacles) {
+      if (spawnX - (existing.x + existing.w) < CAT_W * 2) return;
+    }
+
+    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0 };
     if (type === "small-mouse") { obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H; }
     else if (type === "large-mouse") { obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H; }
     else { obs.w = DOG_W; obs.h = DOG_H; }
@@ -300,14 +318,61 @@ export class GameEngine {
 
     this.obstacles.push(obs);
     this.lastObstacleTime = timestamp;
-    this.nextObstacleDelay = Math.max(900, 2400 - score * 1.2);
+    // Randomised delay — base shrinks with score, random spread on top, min always enforced
+    const base = Math.max(0, 1800 - score * 1.0);
+    this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 900;
   }
 
   private updateObstacles(dt: number) {
-    const move = this.speed * (dt / 16);
-    this.obstacles = this.obstacles
-      .map(o => ({ ...o, x: o.x - move }))
-      .filter(o => o.x + o.w > -20);
+    const gameMove  = this.speed * (dt / 16);
+    const mouseMove = gameMove + MOUSE_EXTRA_SPEED * (dt / 16);
+
+    // Dogs move at game scroll speed
+    for (const obs of this.obstacles) {
+      if (obs.type === "dog") obs.x -= gameMove;
+    }
+
+    // Mice: independent physics + gap/jump behaviour
+    for (const obs of this.obstacles) {
+      if (obs.type === "dog") continue;
+
+      // Vertical physics
+      obs.vy += GRAVITY * (dt / 16);
+      obs.y  += obs.vy * (dt / 16);
+      const floor = this.groundY - obs.h;
+      if (obs.y >= floor) { obs.y = floor; obs.vy = 0; }
+
+      // Move left faster than game scroll
+      obs.x -= mouseMove;
+
+      // Right-side dog gap: only clamp mice that are to the RIGHT of the dog.
+      // Without the side-guard, mice that have already passed the dog get teleported
+      // back to minX (off-screen right), causing the "random disappearance" bug.
+      for (const other of this.obstacles) {
+        if (other.type !== "dog") continue;
+        const dogRight = other.x + other.w;
+        if (obs.x > dogRight) {          // Mouse is approaching from the right — enforce DOG_GAP
+          const minX = dogRight + DOG_GAP;
+          if (obs.x < minX) obs.x = minX;
+        }
+        // Left side: mice naturally move faster than dogs so the gap widens on its own;
+        // no clamp needed (a clamp here would push mice off-screen when the dog nears x=0).
+      }
+
+      // Jump over any obstacle immediately ahead — randomised trigger & force
+      if (obs.vy === 0) {
+        for (const other of this.obstacles) {
+          if (other === obs) continue;
+          const gap = obs.x - (other.x + other.w);
+          if (gap >= 0 && gap < MOUSE_JUMP_DIST && Math.random() < 0.12) {
+            obs.vy = MOUSE_JUMP_FORCE * (0.85 + Math.random() * 0.3);
+            break;
+          }
+        }
+      }
+    }
+
+    this.obstacles = this.obstacles.filter(o => o.x + o.w > -20);
   }
 
   private updateClouds(dt: number) {
@@ -379,9 +444,10 @@ export class GameEngine {
         { x: obs.x + W - 26 * lw, y: obs.y + 27 * lh, w: 24 * lw, h: 5 * lh },
       ];
     }
-    // Dog: source x=6-34, y=23-47 in 48×48; single box for the body
+    // Dog: source x=6-34, y=23-47 in 48×48; shrink by half-cat-length each side horizontally
     const dw = DOG_W / 48, dh = DOG_H / 48;
-    return [{ x: obs.x + DOG_W - 35 * dw, y: obs.y + 23 * dh, w: 29 * dw, h: 25 * dh }];
+    const dogInset = CAT_W / 2; // 40px inset each side → less sensitive collision
+    return [{ x: obs.x + DOG_W - 35 * dw + dogInset, y: obs.y + 23 * dh, w: 29 * dw - CAT_W, h: 25 * dh }];
   }
 
   private aabbOverlap(
@@ -662,7 +728,7 @@ export class GameEngine {
   // ─── Mouse / Rat ───────────────────────────────────────────────────────────
   private drawMouse(ctx: CanvasRenderingContext2D, obs: Obstacle, _large: boolean) {
     if (this.obsPngLoaded && this.ratFrames.length > 0) {
-      const sprite = this.ratFrames[0]; // stand still
+      const sprite = this.ratFrames[this.ratAnimFrame % this.ratFrames.length];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       // Flip to face left
@@ -691,7 +757,7 @@ export class GameEngine {
   // ─── Dog ───────────────────────────────────────────────────────────────────
   private drawDog(ctx: CanvasRenderingContext2D, obs: Obstacle) {
     if (this.obsPngLoaded && this.dogFrames.length > 0) {
-      const sprite = this.dogFrames[0]; // stand still
+      const sprite = this.dogFrames[this.dogAnimFrame % this.dogFrames.length];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       // Flip to face left

@@ -405,9 +405,6 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
         >
           PURR RUN
         </h1>
-        <p className="text-purple-400 font-mono text-sm tracking-widest mt-1 opacity-80">
-          — the cat side-scroller —
-        </p>
       </div>
 
       {/* Glass card */}
