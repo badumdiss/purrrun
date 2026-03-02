@@ -11,7 +11,7 @@ import {
 const GRAVITY = 1.0;
 const JUMP_FORCE = -17.971;
 const DOUBLE_JUMP_FORCE = -14.3;
-const INITIAL_SPEED = 6.655;
+const INITIAL_SPEED = 10.648; // 50% of MAX_SPEED
 const MAX_SPEED = 21.296;
 const SPEED_SCALE = 0.0008;
 
@@ -65,10 +65,10 @@ const BIRD_FORMATION_SPACING = 200;  // px between consecutive formation birds
 const BIRD_FORMATION_HEIGHTS = [75, 40, 10, 40] as const;
 
 // Pigeon (Bird 1) — flies only at very top; drops one aimed poop as it passes over the cat
-const PIGEON_W = 160;
-const PIGEON_H = 160;
-const PIGEON_Y_MIN = -110;  // mostly above canvas; only belly visible at screen top
-const PIGEON_Y_MAX =  -70;
+const PIGEON_W = 96;
+const PIGEON_H = 96;
+const PIGEON_Y_MIN =   0;   // full bird visible at very top of canvas
+const PIGEON_Y_MAX =   5;
 
 // Poop projectile — falls straight down from above the cat
 const POOP_R        = 9.6;
@@ -139,6 +139,7 @@ export class GameEngine {
   private ratFrames: HTMLCanvasElement[] = [];
   private birdFrames: HTMLCanvasElement[] = [];
   private pigeonFrames: HTMLCanvasElement[] = [];
+  private pigeonSilFrames: HTMLCanvasElement[] = [];
   private obsPngLoaded = false;
   private dogAnimFrame = 0;
   private dogDeathAnimFrame = 0;
@@ -272,8 +273,9 @@ export class GameEngine {
     this.lastTime = timestamp;
 
     this._score += dt * 0.04;
-    // Smooth cos²-based ease-in-out over 3 minutes (score ≈ elapsed_ms × 0.04, so 180 s → score 7200)
-    const t = Math.min(this._score / 7200, 1);
+    // Piecewise cos² ease-in-out speed curve (score 2400 ≈ 1 minute):
+    // Cos² ease-in-out: 50% → 100% MAX over 10 minutes (score 24000)
+    const t = Math.min(this._score / 24000, 1);
     this.speed = INITIAL_SPEED + (MAX_SPEED - INITIAL_SPEED) * (1 - Math.cos(t * Math.PI)) / 2;
 
     this.updateCat(dt);
@@ -935,6 +937,16 @@ export class GameEngine {
         cx.imageSmoothingEnabled = false;
         cx.drawImage(pigeonImg, i * PIGEON_FRAME_SRC, 0, PIGEON_FRAME_SRC, PIGEON_FRAME_SRC, 0, 0, PIGEON_W, PIGEON_H);
         this.pigeonFrames.push(c);
+        // Build white silhouette for outline effect
+        const sil = document.createElement("canvas");
+        sil.width = PIGEON_W; sil.height = PIGEON_H;
+        const sx = sil.getContext("2d")!;
+        sx.imageSmoothingEnabled = false;
+        sx.drawImage(c, 0, 0);
+        sx.globalCompositeOperation = "source-atop";
+        sx.fillStyle = "white";
+        sx.fillRect(0, 0, PIGEON_W, PIGEON_H);
+        this.pigeonSilFrames.push(sil);
       }
       pigeonReady = true; check();
     };
@@ -1029,12 +1041,20 @@ export class GameEngine {
   // ─── Pigeon ────────────────────────────────────────────────────────────────
   private drawPigeon(ctx: CanvasRenderingContext2D, obs: Obstacle) {
     if (this.obsPngLoaded && this.pigeonFrames.length > 0) {
-      const sprite = this.pigeonFrames[this.pigeonAnimFrame % this.pigeonFrames.length];
+      const frame = this.pigeonAnimFrame % this.pigeonFrames.length;
+      const sprite = this.pigeonFrames[frame];
+      const sil    = this.pigeonSilFrames[frame];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       // Flip so pigeon faces left (direction of travel)
       ctx.translate(obs.x + obs.w, obs.y);
       ctx.scale(-1, 1);
+      // Draw white outline: silhouette at 8 surrounding offsets
+      if (sil) {
+        for (const [dx, dy] of [[-4,0],[4,0],[0,-4],[0,4],[-3,-3],[-3,3],[3,-3],[3,3]] as [number,number][]) {
+          ctx.drawImage(sil, dx, dy, obs.w, obs.h);
+        }
+      }
       ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
       ctx.restore();
       return;
