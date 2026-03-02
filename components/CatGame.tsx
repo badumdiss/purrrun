@@ -151,6 +151,8 @@ export default function CatGame({ playerName, onQuit }: Props) {
   const [showHint, setShowHint] = useState(true);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [saving, setSaving] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -191,6 +193,18 @@ export default function CatGame({ playerName, onQuit }: Props) {
     [saveScore, fetchLeaderboard]
   );
 
+  const startLoop = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const loop = (ts: number) => {
+      engine.update(ts);
+      if (engine.gameState === "playing" && !isPausedRef.current) {
+        rafRef.current = requestAnimationFrame(loop);
+      }
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  }, []);
+
   const startGame = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -198,6 +212,8 @@ export default function CatGame({ playerName, onQuit }: Props) {
     setGameOver(false);
     setFinalScore(0);
     setShowHint(true);
+    setIsPaused(false);
+    isPausedRef.current = false;
     isCrouchingRef.current = false;
 
     const engine = new GameEngine(canvas, handleGameOver);
@@ -206,20 +222,33 @@ export default function CatGame({ playerName, onQuit }: Props) {
     // Hide hint after 3s
     const hintTimer = setTimeout(() => setShowHint(false), 3000);
 
-    const loop = (ts: number) => {
-      engine.update(ts);
-      if (engine.gameState === "playing") {
-        rafRef.current = requestAnimationFrame(loop);
-      }
-    };
-    rafRef.current = requestAnimationFrame(loop);
+    startLoop();
 
     return () => clearTimeout(hintTimer);
-  }, [handleGameOver]);
+  }, [handleGameOver, startLoop]);
+
+  const togglePause = useCallback(() => {
+    if (gameOver) return;
+    if (isPausedRef.current) {
+      isPausedRef.current = false;
+      setIsPaused(false);
+      startLoop();
+    } else {
+      isPausedRef.current = true;
+      setIsPaused(true);
+      cancelAnimationFrame(rafRef.current);
+    }
+  }, [gameOver, startLoop]);
 
   // Key controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "KeyP") {
+        e.preventDefault();
+        togglePause();
+        return;
+      }
+      if (isPausedRef.current) return;
       if (e.code === "Space" || e.code === "ArrowUp") {
         e.preventDefault();
         engineRef.current?.jump();
@@ -244,7 +273,7 @@ export default function CatGame({ playerName, onQuit }: Props) {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, []);
+  }, [togglePause]);
 
   // Touch controls for mobile
   useEffect(() => {
@@ -300,12 +329,23 @@ export default function CatGame({ playerName, onQuit }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between w-full max-w-4xl px-4 pb-3">
         <span className="text-orange-400 font-mono text-sm font-bold">{playerName}</span>
-        <button
-          onClick={onQuit}
-          className="text-gray-500 hover:text-gray-300 font-mono text-sm transition-colors"
-        >
-          ← quit
-        </button>
+        <div className="flex items-center gap-3">
+          {!gameOver && (
+            <button
+              onClick={togglePause}
+              title="Pause (P)"
+              className="text-gray-500 hover:text-gray-300 font-mono text-sm transition-colors"
+            >
+              {isPaused ? "▶ resume" : "⏸ pause"}
+            </button>
+          )}
+          <button
+            onClick={onQuit}
+            className="text-gray-500 hover:text-gray-300 font-mono text-sm transition-colors"
+          >
+            ← quit
+          </button>
+        </div>
       </div>
 
       {/* Canvas wrapper */}
@@ -317,6 +357,13 @@ export default function CatGame({ playerName, onQuit }: Props) {
           className="w-full rounded-xl border border-purple-900 shadow-[0_0_40px_rgba(120,0,255,0.3)]"
           style={{ imageRendering: "pixelated" }}
         />
+
+        {/* Paused overlay */}
+        {isPaused && !gameOver && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-xl pointer-events-none">
+            <span className="text-gray-300 font-mono text-xl font-bold tracking-widest opacity-80">PAUSED</span>
+          </div>
+        )}
 
         {/* Controls hint overlay */}
         {showHint && !gameOver && (

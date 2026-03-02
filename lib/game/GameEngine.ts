@@ -149,6 +149,7 @@ export class GameEngine {
   private obsAnimTimer  = 0;
 
   private poops: Poop[] = [];
+  private lastPoopLandTime = -Infinity;
 
   private crouchHeld = false;
   private speed = INITIAL_SPEED;
@@ -271,7 +272,9 @@ export class GameEngine {
     this.lastTime = timestamp;
 
     this._score += dt * 0.04;
-    this.speed = Math.min(INITIAL_SPEED + this._score * SPEED_SCALE, MAX_SPEED);
+    // Smooth cos²-based ease-in-out over 3 minutes (score ≈ elapsed_ms × 0.04, so 180 s → score 7200)
+    const t = Math.min(this._score / 7200, 1);
+    this.speed = INITIAL_SPEED + (MAX_SPEED - INITIAL_SPEED) * (1 - Math.cos(t * Math.PI)) / 2;
 
     this.updateCat(dt);
     this.spawnObstacle(timestamp);
@@ -334,6 +337,15 @@ export class GameEngine {
     if (this.lastObstacleTime < 0) return;
     if (timestamp - this.lastObstacleTime < this.nextObstacleDelay) return;
 
+    // Don't spawn while poop is still in the air — the 3.5-cat-width clear must
+    // start from the actual impact, not from before the poop lands.
+    if (this.poops.length > 0) return;
+
+    // Hold off spawning until 3.5 cat-widths (speed-scaled, capped at 2×) have scrolled since poop landed
+    const poopSpeedFactor = Math.min(this.speed / INITIAL_SPEED, 4.0);
+    const poopClearMs = 3.5 * poopSpeedFactor * CAT_W * 16 / this.speed;
+    if (timestamp - this.lastPoopLandTime < poopClearMs) return;
+
     const score = this._score;
     let type: ObstacleType;
     const rand = Math.random();
@@ -354,18 +366,22 @@ export class GameEngine {
     }
 
     // Enforce mandatory gap from every visible obstacle's right edge
+    // Gap thresholds scale with scroll speed so the player always has the same
+    // reaction window in time regardless of current speed.
+    // At INITIAL_SPEED the multiplier is 1 (values unchanged); it grows linearly.
+    const speedFactor = Math.min(this.speed / INITIAL_SPEED, 4.0);
     const spawnX = this.canvas.width + 30;
     for (const existing of this.obstacles) {
       if (existing.type === "pigeon") continue; // pigeon is mostly off-screen — ignore
       if (existing.type === "bird") {
-        // Require 3×CAT_W clear ground after every bird in the formation so the
-        // cat has room to land safely after the triple jump.
-        if (spawnX - (existing.x + existing.w) < CAT_W * 3) return;
+        if (spawnX - (existing.x + existing.w) < CAT_W * 3.5 * speedFactor) return;
         continue;
       }
       // Bird formations need extra space after a dog so the cat has time to stand
       // up and recompose after the belly crawl before the first bird arrives.
-      const minGap = (type === "bird" && existing.type === "dog") ? CAT_W * 2.5 : CAT_W * 2;
+      const minGap = (type === "bird" && existing.type === "dog")
+        ? CAT_W * 2.5 * speedFactor
+        : CAT_W * 2   * speedFactor;
       if (spawnX - (existing.x + existing.w) < minGap) return;
     }
 
@@ -382,7 +398,7 @@ export class GameEngine {
       }
       this.lastObstacleTime = timestamp;
       const base = Math.max(0, 1800 - score * 1.0);
-      this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 900;
+      this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 1400;
       return;
     }
 
@@ -404,35 +420,19 @@ export class GameEngine {
 
     this.obstacles.push(obs);
     this.lastObstacleTime = timestamp;
-    // Randomised delay — base shrinks with score, random spread on top, min always enforced
+    // Randomised delay — base shrinks with score, wide random spread keeps sequence unpredictable
     const base = Math.max(0, 1800 - score * 1.0);
-    this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 900;
+    this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 1400;
   }
 
   private updateObstacles(dt: number) {
     const gameMove  = this.speed * (dt / 16);
     const mouseMove = gameMove + MOUSE_EXTRA_SPEED * (dt / 16);
 
-    // Dogs: always scroll left at game speed; trigger death anim when cat enters belly
+    // Dogs: always scroll left at game speed
     for (const obs of this.obstacles) {
       if (obs.type !== "dog") continue;
-      obs.x -= gameMove; // keep scrolling left whether falling or not — stops the freeze glitch
-
-      if (obs.falling) {
-        // Play death animation at 50 ms/frame; dog stays on ground and scrolls off left
-        this.dogDeathAnimTimer += dt;
-        if (this.dogDeathAnimTimer > 50) {
-          this.dogDeathAnimFrame = (this.dogDeathAnimFrame + 1) % Math.max(1, this.dogDeathFrames.length);
-          this.dogDeathAnimTimer = 0;
-        }
-        // No gravity — dog collapses in place on the ground
-      } else {
-        // Fire when dog's right visual edge passes cat's right edge (cat just entered belly).
-        // The hitbox collision zone has already ended at this point, so no double-jeopardy.
-        if (obs.x + obs.w < CAT_X + CAT_W) {
-          obs.falling = true;
-        }
-      }
+      obs.x -= gameMove;
     }
 
     // Birds: fly horizontally at rat speed, no gravity
@@ -451,13 +451,23 @@ export class GameEngine {
         const pigeonCX = obs.x + PIGEON_W * 0.5;
         // Fire the moment the pigeon passes directly above the cat (right-to-left cross)
         if (pigeonCX <= catCX) {
-          this.poops.push({
-            x:  pigeonCX,
-            y:  obs.y + PIGEON_H,  // belly of pigeon
-            vx: 0,                 // falls straight down — aimed since fired from directly above
-            vy: POOP_START_VY,
-            r:  POOP_R,
+          // Skip poop if any jump-forcing obstacle is in the approach window.
+          // Birds need a wider look-ahead (triple-jump required); scale both by speed.
+          const sf = this.speed / INITIAL_SPEED;
+          const jumpForcingNearby = this.obstacles.some(o => {
+            if (o.type === "pigeon") return false;
+            const lookAhead = (o.type === "bird" ? CAT_W * 8 : CAT_W * 4) * sf;
+            return o.x < CAT_X + lookAhead && o.x + o.w > CAT_X - CAT_W;
           });
+          if (!jumpForcingNearby) {
+            this.poops.push({
+              x:  pigeonCX,
+              y:  obs.y + PIGEON_H,  // belly of pigeon
+              vx: 0,                 // falls straight down — aimed since fired from directly above
+              vy: POOP_START_VY,
+              r:  POOP_R,
+            });
+          }
           obs.poopTimer = 0; // mark as fired; won't fire again this pass
         }
       }
@@ -467,6 +477,7 @@ export class GameEngine {
     for (const p of this.poops) {
       p.vy += POOP_GRAVITY * (dt / 16);
       p.y  += p.vy        * (dt / 16);
+      if (p.y - p.r >= this.groundY) this.lastPoopLandTime = this.lastTime;
     }
     this.poops = this.poops.filter(p => p.y - p.r < this.groundY && p.x + p.r > -10);
 
@@ -537,11 +548,10 @@ export class GameEngine {
       if (obs.type === "pigeon") continue; // pigeon kills only via poop — no contact kill
 
       if (obs.type === "bird") {
-        // Hitbox: small circle centred on the bird's lower body (68% down the sprite),
-        // well below the wings so the cat is only killed on genuine body contact.
-        // Threshold 0.10 ≈ 5+ of the 49 cat-hitbox sample points inside the circle.
-        const bR = BIRD_W * 0.12;  // slightly tighter radius than before
-        if (this.circleRectOverlapFraction(obs.x + BIRD_W * 0.5, obs.y + BIRD_H * 0.68, bR, catHit) > 0.10) return true;
+        // Very forgiving circle: tiny radius, centered deep in the bird body (85% down).
+        // Cat must be physically inside the bird body to trigger — wing grazes are safe.
+        const bR = BIRD_W * 0.07;
+        if (this.circleRectOverlapFraction(obs.x + BIRD_W * 0.5, obs.y + BIRD_H * 0.85, bR, catHit) > 0.10) return true;
         continue;
       }
 
@@ -557,6 +567,44 @@ export class GameEngine {
           return true;
         }
       }
+    }
+
+    // Capsule connecting only birds 3→4 in each formation (closes that specific gap).
+    // Uses a wider radius than the individual circles so a falling cat can't slip through.
+    const bR = BIRD_W * 0.18;
+    const birds = this.obstacles
+      .filter(o => o.type === "bird" && !o.falling)
+      .sort((a, b) => a.x - b.x);
+    for (let i = 0; i < birds.length - 1; i++) {
+      const lo = birds[i], hi = birds[i + 1];
+      if (hi.x - lo.x > BIRD_FORMATION_SPACING * 1.2) continue; // different formations
+      // Only the last pair in the formation (bird 3→4); skip if another formation bird follows hi
+      const afterHi = birds[i + 2];
+      if (afterHi && afterHi.x - hi.x <= BIRD_FORMATION_SPACING * 1.2) continue;
+      const x1 = lo.x + BIRD_W * 0.5, y1 = lo.y + BIRD_H * 0.85;
+      const x2 = hi.x + BIRD_W * 0.5, y2 = hi.y + BIRD_H * 0.85;
+      if (this.capsuleRectOverlap(x1, y1, x2, y2, bR, catHit)) return true;
+    }
+
+    return false;
+  }
+
+  // Check if a capsule (line segment swept by radius r) overlaps a rectangle.
+  // Samples 20 points along the segment; step ≈ 10 px, well under 2r ≈ 38 px.
+  private capsuleRectOverlap(
+    x1: number, y1: number, x2: number, y2: number,
+    r: number,
+    rect: { x: number; y: number; w: number; h: number }
+  ): boolean {
+    const r2 = r * r;
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const px = x1 + t * (x2 - x1);
+      const py = y1 + t * (y2 - y1);
+      const cx = Math.max(rect.x, Math.min(rect.x + rect.w, px));
+      const cy = Math.max(rect.y, Math.min(rect.y + rect.h, py));
+      const dx = px - cx, dy = py - cy;
+      if (dx * dx + dy * dy <= r2) return true;
     }
     return false;
   }
@@ -1058,13 +1106,7 @@ export class GameEngine {
   // ─── Dog ───────────────────────────────────────────────────────────────────
   private drawDog(ctx: CanvasRenderingContext2D, obs: Obstacle) {
     if (this.obsPngLoaded && this.dogFrames.length > 0) {
-      const frames = obs.falling && this.dogDeathFrames.length > 0
-        ? this.dogDeathFrames
-        : this.dogFrames;
-      const frameIdx = obs.falling
-        ? this.dogDeathAnimFrame % frames.length
-        : this.dogAnimFrame % frames.length;
-      const sprite = frames[frameIdx];
+      const sprite = this.dogFrames[this.dogAnimFrame % this.dogFrames.length];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       ctx.translate(obs.x + obs.w, obs.y);
