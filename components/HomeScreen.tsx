@@ -11,16 +11,18 @@ interface Props {
 // Uses Walk3.png (orange cat, 6 run frames) + Still.png (frame 1 = orange idle).
 // The cat wanders erratically left/right, facing whichever way it's heading.
 // When pouncing=true it grows and hops down onto the button.
-function PngWanderCat({ pouncing }: { pouncing: boolean }) {
-  const canvasRef  = useRef<HTMLCanvasElement>(null);
-  const pounceRef  = useRef(pouncing);
-  pounceRef.current = pouncing;
+function PngWanderCat({ pouncing, onExplodeDone }: { pouncing: boolean; onExplodeDone?: (facingRight: boolean) => void }) {
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const pounceRef      = useRef(pouncing);
+  const explodeDoneRef = useRef(onExplodeDone);
+  pounceRef.current      = pouncing;
+  explodeDoneRef.current = onExplodeDone;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const CW = 320, CH = 72;
+    const CW = 320, CH = 200;
     const CAT_SZ  = 40;           // normal display size
     const FRAME_W = 20;            // source frame size (20×20 px each)
     const GROUND_Y = CH - CAT_SZ; // y of cat top when "on ground"
@@ -60,11 +62,18 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
       let doubleTimer  = 0;   // time since first jump (for scheduling double jump)
       let willDouble   = false; // whether this hop will have a double jump
 
-      // pounce phase: "wander" → "leap" → "done"
-      let phase: "wander" | "leap" | "done" = "wander";
+      // pounce phase: "wander" → "leap" → "explode" → "done"
+      let phase: "wander" | "leap" | "explode" | "done" = "wander";
       let leapScale  = 1;
       let lastTs     = -1;
       let rafId: number;
+
+      // Explosion state
+      type Particle = { x:number; y:number; vx:number; vy:number; life:number; size:number; color:string };
+      let particles: Particle[] = [];
+      let flashAlpha  = 0;
+      let shockR      = 0;
+      let shockAlpha  = 0;
 
       const ctx = (canvas as HTMLCanvasElement).getContext("2d")!;
 
@@ -98,7 +107,7 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
         if (pounceRef.current && phase === "wander") {
           phase     = "leap";
           catVX     = 0;
-          catVY     = -9;
+          catVY     = -16; // reaches near the top of the 200px canvas arc
           leapScale = 1;
           // face center
           facingRight = catX < CW / 2 - CAT_SZ / 2;
@@ -111,8 +120,27 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
           const sz  = Math.round(CAT_SZ * leapScale);
           const landY = CH - sz;
           if (catY >= landY && catVY > 0) {
-            catY  = landY;
-            phase = "done";
+            catY = landY;
+            phase = "explode";
+            // Spawn burst particles from cat centre
+            const px = catX + sz / 2;
+            const py = landY + sz / 2;
+            flashAlpha = 1.0;
+            shockR     = 0;
+            shockAlpha = 1.0;
+            const colors = ["#ffffff", "#ff8c00", "#ffe000", "#ff4400", "#ffaa00"];
+            for (let i = 0; i < 48; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 1.5 + Math.random() * 9;
+              particles.push({
+                x: px, y: py,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 2,
+                life: 1.0,
+                size: 1 + Math.random() * 5,
+                color: colors[Math.floor(Math.random() * colors.length)],
+              });
+            }
           }
           // drift toward centre x
           const targetX = CW / 2 - sz / 2;
@@ -120,6 +148,56 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
           runTimer += dt;
           if (runTimer > 90) { runIdx = (runIdx + 1) % runFrames.length; runTimer = 0; }
           drawCat(runFrames[runIdx] ?? stillFrame!, catX, catY, sz, facingRight);
+          rafId = requestAnimationFrame(animate);
+          return;
+        }
+
+        if (phase === "explode") {
+          ctx.clearRect(0, 0, CW, CH);
+          // Flash
+          if (flashAlpha > 0) {
+            ctx.fillStyle = `rgba(255,200,50,${flashAlpha})`;
+            ctx.fillRect(0, 0, CW, CH);
+            flashAlpha = Math.max(0, flashAlpha - dt / 120);
+          }
+          // Cat sits at landing spot
+          const sz = Math.round(CAT_SZ * leapScale);
+          drawCat(stillFrame!, CW / 2 - sz / 2, CH - sz, sz, facingRight);
+          // Expanding shockwave ring
+          if (shockAlpha > 0) {
+            ctx.save();
+            ctx.strokeStyle = `rgba(255,200,50,${shockAlpha})`;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(CW / 2, CH - sz / 2, shockR, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            shockR     += 4 * (dt / 16);
+            shockAlpha  = Math.max(0, shockAlpha - dt / 280);
+          }
+          // Particles
+          ctx.save();
+          let anyAlive = false;
+          for (const p of particles) {
+            p.x  += p.vx * (dt / 16);
+            p.y  += p.vy * (dt / 16);
+            p.vy += 0.45 * (dt / 16);
+            p.life -= dt / 480;
+            if (p.life > 0) {
+              anyAlive = true;
+              ctx.globalAlpha = Math.max(0, p.life);
+              ctx.fillStyle = p.color;
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, p.size * Math.max(0.1, p.life), 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+          ctx.globalAlpha = 1;
+          ctx.restore();
+          if (!anyAlive && flashAlpha <= 0 && shockAlpha <= 0) {
+            phase = "done";
+            explodeDoneRef.current?.(facingRight);
+          }
           rafId = requestAnimationFrame(animate);
           return;
         }
@@ -229,15 +307,24 @@ function PngWanderCat({ pouncing }: { pouncing: boolean }) {
     <canvas
       ref={canvasRef}
       width={320}
-      height={72}
-      style={{ imageRendering: "pixelated", width: 320, height: 72, display: "block" }}
+      height={200}
+      style={{
+        imageRendering: "pixelated",
+        width: 320,
+        height: 200,
+        display: "block",
+        position: "absolute",
+        bottom: 0,
+        left: 0,
+        pointerEvents: "none",
+      }}
     />
   );
 }
 
 // ── Full-screen grow animation after pounce ───────────────────────────────────
 // Cat grows from ~72 px at screen centre to cover the whole screen, then calls onDone.
-function FillScreenCat({ onDone }: { onDone: () => void }) {
+function FillScreenCat({ onDone, facingRight }: { onDone: () => void; facingRight: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
@@ -254,17 +341,19 @@ function FillScreenCat({ onDone }: { onDone: () => void }) {
     const duration  = 900;                            // ms
     const cx = W / 2, cy = H * 0.62;                 // roughly where button sits
 
-    // Eye position in the 20×20 source sprite (frame 1, cat faces left → head on left side)
-    // After flip (cat drawn facing right), source x=4 lands at: tx - size*(4/20) = tx - size*0.2
-    // We want that point to converge to (W/2, H/2) as the cat fills the screen.
-    const eyeXFrac = 4 / 20;  // 0.2
-    const eyeYFrac = 7 / 20;  // 0.35
+    // Mouth position in the 20×20 source sprite (frame 1, cat faces left → head on left side)
+    // Mouth is ~col 4, row 13 in the 20×20 source.
+    const eyeXFrac = 4 / 20;   // 0.20 — horizontal col of mouth
+    const eyeYFrac = 13 / 20;  // 0.65 — vertical row of mouth
 
-    // Initial translation (t=0, size=startSize): cat centred at (cx, cy)
-    const txInit = cx + startSize / 2;
-    const tyInit = cy - startSize / 2;
-    // Final translation (t=1, size=maxSize): eye at (W/2, H/2)
-    const txFinal = W / 2 + maxSize * eyeXFrac;
+    // Translation math differs by facing direction because of ctx.scale(-1,1):
+    //   Facing right (flipped):  sprite draws from tx-size to tx; cat centre = tx - size/2
+    //     txInit = cx + startSize/2;  txFinal = W/2 + maxSize*eyeXFrac
+    //   Facing left (not flipped): sprite draws from tx to tx+size; cat centre = tx + size/2
+    //     txInit = cx - startSize/2;  txFinal = W/2 - maxSize*eyeXFrac
+    const txInit  = facingRight ? cx + startSize / 2 : cx - startSize / 2;
+    const tyInit  = cy - startSize / 2;
+    const txFinal = facingRight ? W / 2 + maxSize * eyeXFrac : W / 2 - maxSize * eyeXFrac;
     const tyFinal = H / 2 - maxSize * eyeYFrac;
 
     let stillFrame: HTMLCanvasElement | null = null;
@@ -285,7 +374,7 @@ function FillScreenCat({ onDone }: { onDone: () => void }) {
         const ease = t * t;                            // ease-in = starts slow, accelerates
         const size  = startSize + (maxSize - startSize) * ease;
 
-        // Interpolate translation so eye tracks from initial position → screen centre
+        // Interpolate translation so mouth tracks from initial position → screen centre
         const tx = txInit + ease * (txFinal - txInit);
         const ty = tyInit + ease * (tyFinal - tyInit);
 
@@ -294,9 +383,8 @@ function FillScreenCat({ onDone }: { onDone: () => void }) {
 
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        // Cat faces right — flip horizontally around (tx, ty)
         ctx.translate(tx, ty);
-        ctx.scale(-1, 1);
+        if (facingRight) ctx.scale(-1, 1);            // flip only when cat faces right
         ctx.drawImage(stillFrame!, 0, 0, size, size);
         ctx.restore();
 
@@ -359,10 +447,11 @@ function Stars() {
 
 // ── Home Screen ──────────────────────────────────────────────────────────────
 export default function HomeScreen({ onStart, onLeaderboard }: Props) {
-  const [name, setName]         = useState("");
-  const [pouncing, setPouncing] = useState(false);
-  const [filling, setFilling]   = useState(false);
-  const [error, setError]       = useState("");
+  const [name, setName]               = useState("");
+  const [pouncing, setPouncing]       = useState(false);
+  const [filling, setFilling]         = useState(false);
+  const [catFacingRight, setCatFacingRight] = useState(true);
+  const [error, setError]             = useState("");
   const nameRef  = useRef(name);
   nameRef.current = name;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -387,8 +476,6 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
     setError("");
     localStorage.setItem("catRunnerPlayerName", trimmed);
     setPouncing(true);
-    // After the pounce-leap settles (~800 ms), trigger the screen-fill animation
-    setTimeout(() => setFilling(true), 800);
   };
 
   const handleFillDone = useCallback(() => {
@@ -420,8 +507,14 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
             textShadow: "0 0 30px rgba(255,140,0,0.6), 0 0 60px rgba(255,140,0,0.3)",
           }}
         >
-          PURR RUN
+          PURRSIST
         </h1>
+        <p className="text-gray-400 font-mono text-xs mt-2 max-w-xs mx-auto leading-relaxed">
+          Duck (↓) to avoid dogs and bird poop. Jump (↑) to avoid anything else.<br />
+          <span style={{ color: "#ff8c00", textShadow: "0 0 8px rgba(255,140,0,0.5)" }}>
+            Try not to suck more than you already do.
+          </span>
+        </p>
       </div>
 
       {/* Glass card */}
@@ -434,8 +527,8 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
           boxShadow: "0 0 40px rgba(120,50,200,0.2)",
         }}
       >
-        <label className="block text-purple-300 font-mono text-sm mb-2 tracking-wide">
-          Your name, adventurer:
+        <label className="block text-center text-purple-300 font-mono text-sm mb-2 tracking-wide">
+          Name
         </label>
         <input
           ref={inputRef}
@@ -444,14 +537,16 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
           onChange={(e) => { setName(e.target.value); setError(""); }}
           onKeyDown={handleKeyDown}
           maxLength={20}
-          placeholder="e.g. Whiskers McGee"
-          className="w-full bg-black/40 border border-purple-700 rounded-lg px-4 py-3 text-white font-mono placeholder-gray-600 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors mb-1"
+          placeholder="e.g. Purrameshwara Meawesh"
+          className="w-full bg-black/40 border border-purple-700 rounded-lg px-4 py-3 text-white font-mono placeholder-gray-600 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors mb-1 text-center"
         />
         {error && <p className="text-red-400 font-mono text-xs mb-2">{error}</p>}
 
-        {/* PNG cat wanders above the button */}
-        <div className="mt-3 flex justify-center" style={{ height: 72 }}>
-          <PngWanderCat pouncing={pouncing} />
+        {/* PNG cat wanders above the button — canvas overflows upward so jump is visible */}
+        <div className="mt-2 flex justify-center" style={{ height: 60, overflow: "visible" }}>
+          <div style={{ position: "relative", width: 320, height: "100%" }}>
+            <PngWanderCat pouncing={pouncing} onExplodeDone={(fr) => { setCatFacingRight(fr); setFilling(true); }} />
+          </div>
         </div>
 
         <button
@@ -463,31 +558,16 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
               : "bg-orange-600 hover:bg-orange-500 active:scale-95 hover:shadow-[0_0_20px_rgba(255,140,0,0.5)]"
             } text-white`}
         >
-          {pouncing ? "🐱 pouncing…" : "🐾 START GAME"}
+          {pouncing ? "🐱 pouncing…" : "START GAME"}
         </button>
 
         <button
           onClick={onLeaderboard}
           className="w-full mt-2 py-2.5 rounded-xl font-bold font-mono text-sm border border-purple-700 text-purple-300 hover:bg-purple-900/30 active:scale-95 transition-all"
         >
-          🏆 See Leaderboard
+          Leaderboard
         </button>
 
-        <div className="mt-4 pt-4 border-t border-purple-900/50 grid grid-cols-2 gap-2 text-center">
-          {[
-            { key: "SPACE/↑",     desc: "jump" },
-            { key: "SPACE/↑ ×2",  desc: "double jump" },
-            { key: "SPACE/↑ ×3",  desc: "triple jump" },
-            { key: "↓",           desc: "crouch" },
-          ].map(({ key, desc }) => (
-            <div key={key}>
-              <div className="text-orange-400 font-mono text-xs font-bold bg-black/40 rounded px-1 py-0.5 mb-1">
-                {key}
-              </div>
-              <div className="text-gray-500 font-mono text-xs">{desc}</div>
-            </div>
-          ))}
-        </div>
       </div>
 
       <p className="relative z-10 mt-6 text-gray-700 font-mono text-xs">
@@ -495,7 +575,7 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
       </p>
 
       {/* Full-screen cat-grow transition after pounce */}
-      {filling && <FillScreenCat onDone={handleFillDone} />}
+      {filling && <FillScreenCat onDone={handleFillDone} facingRight={catFacingRight} />}
     </div>
   );
 }
