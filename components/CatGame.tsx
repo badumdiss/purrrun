@@ -299,10 +299,7 @@ export default function CatGame({ playerName, onQuit }: Props) {
     <div className="flex flex-col items-center justify-center min-h-screen bg-[#06040f] select-none">
       {/* Header */}
       <div className="flex items-center justify-between w-full max-w-4xl px-4 pb-3">
-        <span className="text-purple-400 font-mono text-sm">
-          playing as{" "}
-          <span className="text-orange-400 font-bold">{playerName}</span>
-        </span>
+        <span className="text-orange-400 font-mono text-sm font-bold">{playerName}</span>
         <button
           onClick={onQuit}
           className="text-gray-500 hover:text-gray-300 font-mono text-sm transition-colors"
@@ -430,9 +427,6 @@ export default function CatGame({ playerName, onQuit }: Props) {
         </button>
       </div>
 
-      <p className="mt-3 text-gray-700 font-mono text-xs">
-        avoid mice · crouch under dogs · survive
-      </p>
     </div>
   );
 }

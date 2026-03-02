@@ -11,12 +11,14 @@ interface Props {
 // Uses Walk3.png (orange cat, 6 run frames) + Still.png (frame 1 = orange idle).
 // The cat wanders erratically left/right, facing whichever way it's heading.
 // When pouncing=true it grows and hops down onto the button.
-function PngWanderCat({ pouncing, onExplodeDone }: { pouncing: boolean; onExplodeDone?: (facingRight: boolean) => void }) {
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const pounceRef      = useRef(pouncing);
-  const explodeDoneRef = useRef(onExplodeDone);
-  pounceRef.current      = pouncing;
-  explodeDoneRef.current = onExplodeDone;
+function PngWanderCat({ pouncing, onExplodeStart, onExplodeDone }: { pouncing: boolean; onExplodeStart?: () => void; onExplodeDone?: (facingRight: boolean) => void }) {
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const pounceRef        = useRef(pouncing);
+  const explodeStartRef  = useRef(onExplodeStart);
+  const explodeDoneRef   = useRef(onExplodeDone);
+  pounceRef.current        = pouncing;
+  explodeStartRef.current  = onExplodeStart;
+  explodeDoneRef.current   = onExplodeDone;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -122,6 +124,7 @@ function PngWanderCat({ pouncing, onExplodeDone }: { pouncing: boolean; onExplod
           if (catY >= landY && catVY > 0) {
             catY = landY;
             phase = "explode";
+            explodeStartRef.current?.();
             // Spawn burst particles from cat centre
             const px = catX + sz / 2;
             const py = landY + sz / 2;
@@ -449,6 +452,7 @@ function Stars() {
 export default function HomeScreen({ onStart, onLeaderboard }: Props) {
   const [name, setName]               = useState("");
   const [pouncing, setPouncing]       = useState(false);
+  const [flashing, setFlashing]       = useState(false);
   const [filling, setFilling]         = useState(false);
   const [catFacingRight, setCatFacingRight] = useState(true);
   const [error, setError]             = useState("");
@@ -545,7 +549,7 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
         {/* PNG cat wanders above the button — canvas overflows upward so jump is visible */}
         <div className="mt-2 flex justify-center" style={{ height: 60, overflow: "visible" }}>
           <div style={{ position: "relative", width: 320, height: "100%" }}>
-            <PngWanderCat pouncing={pouncing} onExplodeDone={(fr) => { setCatFacingRight(fr); setFilling(true); }} />
+            <PngWanderCat pouncing={pouncing} onExplodeStart={() => setFlashing(true)} onExplodeDone={(fr) => { setCatFacingRight(fr); setFilling(true); }} />
           </div>
         </div>
 
@@ -570,9 +574,22 @@ export default function HomeScreen({ onStart, onLeaderboard }: Props) {
 
       </div>
 
-      <p className="relative z-10 mt-6 text-gray-700 font-mono text-xs">
-        jump over evil mice · crouch under dogs · rack up distance
-      </p>
+
+      {/* Full-screen flash on explosion */}
+      {flashing && (
+        <>
+          <style>{`@keyframes flash-out { from { opacity:1; } to { opacity:0; } }`}</style>
+          <div
+            style={{
+              position: "fixed", inset: 0, zIndex: 45,
+              background: "rgba(255,200,50,1)",
+              animation: "flash-out 0.5s ease-out forwards",
+              pointerEvents: "none",
+            }}
+            onAnimationEnd={() => setFlashing(false)}
+          />
+        </>
+      )}
 
       {/* Full-screen cat-grow transition after pounce */}
       {filling && <FillScreenCat onDone={handleFillDone} facingRight={catFacingRight} />}
