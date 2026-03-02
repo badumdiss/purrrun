@@ -52,11 +52,17 @@ const DOG_GAP           = CAT_W * 2;                   // clear zone each side o
 const MOUSE_JUMP_DIST   = SMALL_MOUSE_W;               // start jump check within one mouse-width
 const MIN_OBS_DELAY     = 600;                          // minimum ms between spawns (≥ 2-cat gap)
 
-// Bird — flies right to left at rat speed, spawns at mid-aerial heights
+// Bird — flies right to left at rat speed; always spawns as a 4-bird formation
 const BIRD_W = 160;
 const BIRD_H = 160;
-const BIRD_Y_MIN = 10;
-const BIRD_Y_MAX = 60;
+// Formation: 4 birds with equal horizontal spacing, staggered heights
+// Heights chosen so the cat MUST triple-jump (crouching no longer escapes bird 1).
+//   Bird 1 (y=75): belly near ground → kills running + crouching cat
+//   Bird 2 (y=40): mid height → kills cat descending from a single jump
+//   Bird 3 (y=10): high       → kills cat on a late double-jump trajectory
+//   Bird 4 (y=40): trailing   → punishes panic jumps after the formation
+const BIRD_FORMATION_SPACING = 200;  // px between consecutive formation birds
+const BIRD_FORMATION_HEIGHTS = [75, 40, 10, 40] as const;
 
 // Pigeon (Bird 1) — flies only at very top; drops one aimed poop as it passes over the cat
 const PIGEON_W = 160;
@@ -65,7 +71,7 @@ const PIGEON_Y_MIN = -110;  // mostly above canvas; only belly visible at screen
 const PIGEON_Y_MAX =  -70;
 
 // Poop projectile — falls straight down from above the cat
-const POOP_R        = 12;
+const POOP_R        = 9.6;
 const POOP_GRAVITY  = 0.40;  // gentle fall → ~400 ms reaction time from belly to ground
 const POOP_START_VY = 0.5;
 
@@ -347,12 +353,37 @@ export class GameEngine {
       else                  type = "pigeon";
     }
 
-    // Enforce mandatory 2-cat pixel gap from every visible ground obstacle's right edge
-    // (birds are airborne so they don't block ground spawns, but still need x-clearance)
+    // Enforce mandatory gap from every visible obstacle's right edge
     const spawnX = this.canvas.width + 30;
     for (const existing of this.obstacles) {
-      if (existing.type === "bird" || existing.type === "pigeon") continue; // airborne — don't block ground spacing
-      if (spawnX - (existing.x + existing.w) < CAT_W * 2) return;
+      if (existing.type === "pigeon") continue; // pigeon is mostly off-screen — ignore
+      if (existing.type === "bird") {
+        // Require 3×CAT_W clear ground after every bird in the formation so the
+        // cat has room to land safely after the triple jump.
+        if (spawnX - (existing.x + existing.w) < CAT_W * 3) return;
+        continue;
+      }
+      // Bird formations need extra space after a dog so the cat has time to stand
+      // up and recompose after the belly crawl before the first bird arrives.
+      const minGap = (type === "bird" && existing.type === "dog") ? CAT_W * 2.5 : CAT_W * 2;
+      if (spawnX - (existing.x + existing.w) < minGap) return;
+    }
+
+    // Bird formations are handled separately (4 birds at once, early return)
+    if (type === "bird") {
+      for (let i = 0; i < BIRD_FORMATION_HEIGHTS.length; i++) {
+        this.obstacles.push({
+          type: "bird",
+          x: spawnX + i * BIRD_FORMATION_SPACING,
+          y: BIRD_FORMATION_HEIGHTS[i],
+          w: BIRD_W, h: BIRD_H,
+          vy: 0, falling: false, poopTimer: 0,
+        });
+      }
+      this.lastObstacleTime = timestamp;
+      const base = Math.max(0, 1800 - score * 1.0);
+      this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 900;
+      return;
     }
 
     const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false, poopTimer: 0 };
@@ -362,9 +393,6 @@ export class GameEngine {
     } else if (type === "large-mouse") {
       obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H;
       obs.y = this.groundY - obs.h;
-    } else if (type === "bird") {
-      obs.w = BIRD_W; obs.h = BIRD_H;
-      obs.y = BIRD_Y_MIN + Math.random() * (BIRD_Y_MAX - BIRD_Y_MIN);
     } else if (type === "pigeon") {
       obs.w = PIGEON_W; obs.h = PIGEON_H;
       obs.y = PIGEON_Y_MIN + Math.random() * (PIGEON_Y_MAX - PIGEON_Y_MIN);
@@ -506,12 +534,14 @@ export class GameEngine {
     for (const obs of this.obstacles) {
       if (obs.falling) continue;
 
-      if (obs.type === "bird" || obs.type === "pigeon") {
-        // Small central circle; kill only when >50% of cat body overlaps
-        const W  = obs.type === "bird" ? BIRD_W : PIGEON_W;
-        const H  = obs.type === "bird" ? BIRD_H : PIGEON_H;
-        const bR = W * 0.13;
-        if (this.circleRectOverlapFraction(obs.x + W * 0.5, obs.y + H * 0.52, bR, catHit) > 0.50) return true;
+      if (obs.type === "pigeon") continue; // pigeon kills only via poop — no contact kill
+
+      if (obs.type === "bird") {
+        // Hitbox: small circle centred on the bird's lower body (68% down the sprite),
+        // well below the wings so the cat is only killed on genuine body contact.
+        // Threshold 0.10 ≈ 5+ of the 49 cat-hitbox sample points inside the circle.
+        const bR = BIRD_W * 0.12;  // slightly tighter radius than before
+        if (this.circleRectOverlapFraction(obs.x + BIRD_W * 0.5, obs.y + BIRD_H * 0.68, bR, catHit) > 0.10) return true;
         continue;
       }
 
