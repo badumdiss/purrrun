@@ -353,7 +353,7 @@ export default function CatGame({ playerName, onQuit }: Props) {
         <canvas
           ref={canvasRef}
           width={900}
-          height={300}
+          height={345}
           className="w-full rounded-xl border border-purple-900 shadow-[0_0_40px_rgba(120,0,255,0.3)]"
           style={{ imageRendering: "pixelated" }}
         />

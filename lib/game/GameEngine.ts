@@ -57,12 +57,13 @@ const BIRD_W = 160;
 const BIRD_H = 160;
 // Formation: 4 birds with equal horizontal spacing, staggered heights
 // Heights chosen so the cat MUST triple-jump (crouching no longer escapes bird 1).
-//   Bird 1 (y=75): belly near ground → kills running + crouching cat
-//   Bird 2 (y=40): mid height → kills cat descending from a single jump
-//   Bird 3 (y=10): high       → kills cat on a late double-jump trajectory
-//   Bird 4 (y=40): trailing   → punishes panic jumps after the formation
+// Tuned for groundY = canvas.height - 75 = 270 (canvas height 345).
+//   Bird 1 (y=120): belly near ground → kills running + crouching cat
+//   Bird 2 (y=85):  mid height → kills cat descending from a single jump
+//   Bird 3 (y=55):  high       → kills cat on a late double-jump trajectory
+//   Bird 4 (y=85):  trailing   → punishes panic jumps after the formation
 const BIRD_FORMATION_SPACING = 200;  // px between consecutive formation birds
-const BIRD_FORMATION_HEIGHTS = [75, 40, 10, 40] as const;
+const BIRD_FORMATION_HEIGHTS = [120, 85, 55, 85] as const;
 
 // Pigeon (Bird 1) — flies only at very top; drops one aimed poop as it passes over the cat
 const PIGEON_W = 96;
@@ -72,8 +73,8 @@ const PIGEON_Y_MAX =   5;
 
 // Poop projectile — falls straight down from above the cat
 const POOP_R        = 9.6;
-const POOP_GRAVITY  = 0.40;  // gentle fall → ~400 ms reaction time from belly to ground
-const POOP_START_VY = 0.5;
+const POOP_GRAVITY  = 0.72;  // gentle fall → ~400 ms reaction time from belly to ground
+const POOP_START_VY = 0.9;
 
 // Pixel-analysis-derived visual hitbox offsets (source bounds → canvas coords)
 // Cat  source: x=0-18, y=2-19 in 20×20 at 4× → x=0-72 y=8-76 in 80×80; flipped → x+=8
@@ -390,9 +391,9 @@ export class GameEngine {
       }
       // Bird formations need extra space after a dog so the cat has time to stand
       // up and recompose after the belly crawl before the first bird arrives.
-      // For rat trios the rightmost rat trails the first by 2*(w+2)=344px extra,
+      // For rat duos the rightmost rat trails the first by 1*(w+2)=172px extra,
       // so we add that full tail width on top of the normal gap.
-      const RAT_TRIO_TAIL = 2 * (LARGE_MOUSE_W + 2);
+      const RAT_TRIO_TAIL = 1 * (LARGE_MOUSE_W + 2);
       const minGap =
         type === "bird" && existing.type === "dog"
           ? CAT_W * 2.5 * speedFactor
@@ -423,7 +424,7 @@ export class GameEngine {
     if (type === "large-mouse") {
       const w = LARGE_MOUSE_W;
       const h = LARGE_MOUSE_H;
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 2; i++) {
         this.obstacles.push({
           type, x: spawnX + i * (w + 2),
           y: this.groundY - h, w, h,
