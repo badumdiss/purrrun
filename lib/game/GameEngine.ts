@@ -11,7 +11,7 @@ import {
 const GRAVITY = 1.0;
 const JUMP_FORCE = -17.971;
 const DOUBLE_JUMP_FORCE = -14.3;
-const INITIAL_SPEED = 10.648; // 50% of MAX_SPEED
+const INITIAL_SPEED = 8.518;  // 40% of MAX_SPEED (phase 1 start)
 const MAX_SPEED = 21.296;
 const SPEED_SCALE = 0.0008;
 
@@ -273,10 +273,16 @@ export class GameEngine {
     this.lastTime = timestamp;
 
     this._score += dt * 0.04;
-    // Piecewise cos² ease-in-out speed curve (score 2400 ≈ 1 minute):
-    // Cos² ease-in-out: 50% → 100% MAX over 10 minutes (score 24000)
-    const t = Math.min(this._score / 24000, 1);
-    this.speed = INITIAL_SPEED + (MAX_SPEED - INITIAL_SPEED) * (1 - Math.cos(t * Math.PI)) / 2;
+    // Two-phase cos² ease-in speed curve:
+    //   Phase 1 (0–1 min,  score 0–2400):   40% → 60% MAX
+    //   Phase 2 (1–7 min, score 2400–16800): 60% → 100% MAX
+    if (this._score < 2400) {
+      const t = this._score / 2400;
+      this.speed = MAX_SPEED * 0.4 + MAX_SPEED * 0.2 * (1 - Math.cos(t * Math.PI)) / 2;
+    } else {
+      const t = Math.min((this._score - 2400) / 14400, 1);
+      this.speed = MAX_SPEED * 0.6 + MAX_SPEED * 0.4 * (1 - Math.cos(t * Math.PI)) / 2;
+    }
 
     this.updateCat(dt);
     this.spawnObstacle(timestamp);
@@ -376,7 +382,11 @@ export class GameEngine {
     for (const existing of this.obstacles) {
       if (existing.type === "pigeon") continue; // pigeon is mostly off-screen — ignore
       if (existing.type === "bird") {
-        if (spawnX - (existing.x + existing.w) < CAT_W * 3.5 * speedFactor) return;
+        // Need ~820px at base speed for bird 4 (tail of formation, at spawnX+600)
+        // to fully clear the cat before a new obstacle can spawn. 13× gives 1040px
+        // of clearance, and scaling with speedFactor maintains the reaction window
+        // as the game accelerates.
+        if (spawnX - (existing.x + existing.w) < CAT_W * 13 * speedFactor) return;
         continue;
       }
       // Bird formations need extra space after a dog so the cat has time to stand
