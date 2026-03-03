@@ -83,7 +83,7 @@ const CAT_HIT_BUF = 4; // small extra buffer on cat hitbox for playability
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type CatState = "running" | "jumping" | "double-jumping" | "crouching" | "dead";
-export type ObstacleType = "small-mouse" | "large-mouse" | "dog" | "bird" | "pigeon";
+export type ObstacleType = "large-mouse" | "dog" | "bird" | "pigeon";
 
 interface Cat {
   x: number; y: number; w: number; h: number;
@@ -98,6 +98,7 @@ interface Obstacle {
   vy: number;
   falling: boolean;   // dog-only
   poopTimer: number;  // pigeon-only: ms until next poop drop
+  flipped: boolean;   // rat-only: random horizontal mirror
 }
 
 interface Poop {
@@ -359,16 +360,14 @@ export class GameEngine {
     const rand = Math.random();
 
     if (score < 200) {
-      type = "small-mouse";
+      type = "large-mouse";
     } else if (score < 400) {
-      if      (rand < 0.42) type = "small-mouse";
-      else if (rand < 0.75) type = "large-mouse";
+      if      (rand < 0.55) type = "large-mouse";
       else if (rand < 0.90) type = "bird";
       else                  type = "pigeon";
     } else {
-      if      (rand < 0.25) type = "small-mouse";
-      else if (rand < 0.45) type = "large-mouse";
-      else if (rand < 0.65) type = "dog";
+      if      (rand < 0.35) type = "large-mouse";
+      else if (rand < 0.55) type = "dog";
       else if (rand < 0.82) type = "bird";
       else                  type = "pigeon";
     }
@@ -391,9 +390,15 @@ export class GameEngine {
       }
       // Bird formations need extra space after a dog so the cat has time to stand
       // up and recompose after the belly crawl before the first bird arrives.
-      const minGap = (type === "bird" && existing.type === "dog")
-        ? CAT_W * 2.5 * speedFactor
-        : CAT_W * 2   * speedFactor;
+      // For rat trios the rightmost rat trails the first by 2*(w+2)=344px extra,
+      // so we add that full tail width on top of the normal gap.
+      const RAT_TRIO_TAIL = 2 * (LARGE_MOUSE_W + 2);
+      const minGap =
+        type === "bird" && existing.type === "dog"
+          ? CAT_W * 2.5 * speedFactor
+          : existing.type === "large-mouse"
+            ? (CAT_W * 2 + RAT_TRIO_TAIL) * speedFactor
+            : CAT_W * 2 * speedFactor;
       if (spawnX - (existing.x + existing.w) < minGap) return;
     }
 
@@ -405,7 +410,7 @@ export class GameEngine {
           x: spawnX + i * BIRD_FORMATION_SPACING,
           y: BIRD_FORMATION_HEIGHTS[i],
           w: BIRD_W, h: BIRD_H,
-          vy: 0, falling: false, poopTimer: 0,
+          vy: 0, falling: false, poopTimer: 0, flipped: false,
         });
       }
       this.lastObstacleTime = timestamp;
@@ -414,14 +419,25 @@ export class GameEngine {
       return;
     }
 
-    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false, poopTimer: 0 };
-    if (type === "small-mouse") {
-      obs.w = SMALL_MOUSE_W; obs.h = SMALL_MOUSE_H;
-      obs.y = this.groundY - obs.h;
-    } else if (type === "large-mouse") {
-      obs.w = LARGE_MOUSE_W; obs.h = LARGE_MOUSE_H;
-      obs.y = this.groundY - obs.h;
-    } else if (type === "pigeon") {
+    // Rats always come in threes, right behind each other
+    if (type === "large-mouse") {
+      const w = LARGE_MOUSE_W;
+      const h = LARGE_MOUSE_H;
+      for (let i = 0; i < 3; i++) {
+        this.obstacles.push({
+          type, x: spawnX + i * (w + 2),
+          y: this.groundY - h, w, h,
+          vy: 0, falling: false, poopTimer: 0, flipped: Math.random() < 0.5,
+        });
+      }
+      this.lastObstacleTime = timestamp;
+      const base = Math.max(0, 1800 - score * 1.0);
+      this.nextObstacleDelay = MIN_OBS_DELAY + base + Math.random() * 1400;
+      return;
+    }
+
+    const obs: Obstacle = { type, x: spawnX, y: 0, w: 0, h: 0, vy: 0, falling: false, poopTimer: 0, flipped: false };
+    if (type === "pigeon") {
       obs.w = PIGEON_W; obs.h = PIGEON_H;
       obs.y = PIGEON_Y_MIN + Math.random() * (PIGEON_Y_MAX - PIGEON_Y_MIN);
       obs.poopTimer = 1; // sentinel: fire once when pigeon centre-x crosses over cat
@@ -673,16 +689,6 @@ export class GameEngine {
   // Rat source (frame 0): narrow head at top (y=23-27, x=8-24), wider body below (y=27-31, x=2-25).
   // All obstacles rendered flipped (facing left) → x coords mirrored: x_screen = obs.x + W - src_x*scale.
   private getObsHitboxes(obs: Obstacle): Array<{ x: number; y: number; w: number; h: number }> {
-    if (obs.type === "small-mouse") {
-      const sw = SMALL_MOUSE_W / 32, sh = SMALL_MOUSE_H / 32;
-      const W = SMALL_MOUSE_W;
-      return [
-        // Upper narrow box: src x=8-24, y=23-27 (head / upper body)
-        { x: obs.x + W - 25 * sw, y: obs.y + 23 * sh, w: 17 * sw, h: 4 * sh },
-        // Lower wide box:  src x=2-25, y=27-31 (belly / legs)
-        { x: obs.x + W - 26 * sw, y: obs.y + 27 * sh, w: 24 * sw, h: 5 * sh },
-      ];
-    }
     if (obs.type === "large-mouse") {
       const lw = LARGE_MOUSE_W / 32, lh = LARGE_MOUSE_H / 32;
       const W = LARGE_MOUSE_W;
@@ -734,8 +740,7 @@ export class GameEngine {
     this.drawGround(ctx, W, H, groundY);
 
     for (const obs of this.obstacles) {
-      if      (obs.type === "small-mouse") this.drawMouse(ctx, obs, false);
-      else if (obs.type === "large-mouse") this.drawMouse(ctx, obs, true);
+      if      (obs.type === "large-mouse") this.drawMouse(ctx, obs, true);
       else if (obs.type === "bird")        this.drawBird(ctx, obs);
       else if (obs.type === "pigeon")      this.drawPigeon(ctx, obs);
       else                                 this.drawDog(ctx, obs);
@@ -1056,9 +1061,17 @@ export class GameEngine {
       const sil    = this.pigeonSilFrames[frame];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
-      // Flip so pigeon faces left (direction of travel)
-      ctx.translate(obs.x + obs.w, obs.y);
-      ctx.scale(-1, 1);
+      // Face right when approaching cat (about to poop) or after pooping; face left on normal approach
+      const pigeonCX  = obs.x + PIGEON_W * 0.5;
+      const catCX     = CAT_X + CAT_W * 0.5;
+      const aboutToPoop = obs.poopTimer === 1 && pigeonCX > catCX && pigeonCX - catCX < PIGEON_W * 2;
+      const hasPooped   = obs.poopTimer === 0;
+      if (aboutToPoop || hasPooped) {
+        ctx.translate(obs.x, obs.y);
+      } else {
+        ctx.translate(obs.x + obs.w, obs.y);
+        ctx.scale(-1, 1);
+      }
       // Draw white outline: silhouette at 8 surrounding offsets
       if (sil) {
         for (const [dx, dy] of [[-4,0],[4,0],[0,-4],[0,4],[-3,-3],[-3,3],[3,-3],[3,3]] as [number,number][]) {
@@ -1110,9 +1123,12 @@ export class GameEngine {
       const sprite = this.ratFrames[this.ratAnimFrame % this.ratFrames.length];
       ctx.save();
       ctx.imageSmoothingEnabled = false;
-      // Flip to face left
-      ctx.translate(obs.x + obs.w, obs.y);
-      ctx.scale(-1, 1);
+      if (obs.flipped) {
+        ctx.translate(obs.x, obs.y);
+      } else {
+        ctx.translate(obs.x + obs.w, obs.y);
+        ctx.scale(-1, 1);
+      }
       ctx.drawImage(sprite, 0, 0, obs.w, obs.h);
       ctx.restore();
       return;
